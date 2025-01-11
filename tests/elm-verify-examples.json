@@ -1,0 +1,3 @@
+{
+    "tests": ["ElmSyntaxToGrain", "./README.md"]
+}

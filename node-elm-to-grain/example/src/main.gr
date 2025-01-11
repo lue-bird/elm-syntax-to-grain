@@ -1,0 +1,27 @@
+module Main
+
+from "bytes" include Bytes
+from "string" include String
+from "marshal" include Marshal
+from "wasi/file" include File
+from "./elm.gr" include Elm
+
+let inputOrError = File.fdRead(File.stdin, size=1000_000)
+match (inputOrError) {
+  Ok((inputBytes, _)) => {
+    let input: String = Bytes.toString(inputBytes)
+    let formatted = Elm.string_concat([input])
+    let writeResult = File.fdWrite(File.stdout, Bytes.fromString(formatted))
+    match (writeResult) {
+      Ok(_) => {
+        void
+      },
+      Err(_) => {
+        print("Failed to write String bytes to stdout")
+      },
+    }
+  },
+  Err(_) => {
+    print("Failed to read input from stdin")
+  },
+}
