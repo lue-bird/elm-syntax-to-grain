@@ -1,4 +1,4 @@
-> Status: only TODO: organizing enum and type alias declarations into rec groups and regular order
+> Status: only TODO: only use let rec when result not a lambda
 
 Print pure [`elm-syntax`](https://dark.elm.dmy.fr/packages/stil4m/elm-syntax/latest/) declarations as
 [grain](https://grain-lang.org/) code.

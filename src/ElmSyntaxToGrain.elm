@@ -48,7 +48,7 @@ type GrainType
         }
     | GrainTypeVariable String
     | GrainTypeFunction
-        { input : GrainType
+        { input : List GrainType
         , output : GrainType
         }
 
@@ -714,7 +714,9 @@ grainTypeContainedRecords grainType =
 
         GrainTypeFunction typeFunction ->
             FastSet.union
-                (typeFunction.input |> grainTypeContainedRecords)
+                (typeFunction.input
+                    |> listMapToFastSetsAndUnify grainTypeContainedRecords
+                )
                 (typeFunction.output |> grainTypeContainedRecords)
 
         GrainTypeTuple typeTuple ->
@@ -723,8 +725,7 @@ grainTypeContainedRecords grainType =
                     grainTypeContainedRecords
 
         GrainTypeConstruct typeConstruct ->
-            -- TODO either instead extract fields from the original Elm.Syntax.TypeAnnotation
-            -- or parse Generated_{fields}
+            -- TODO instead extract fields from the original Elm.Syntax.TypeAnnotation
             {- GrainTypeRecord fields ->
                FastSet.insert
                    (fields |> FastDict.keys)
@@ -733,9 +734,24 @@ grainTypeContainedRecords grainType =
                            grainTypeContainedRecords
                    )
             -}
-            typeConstruct.arguments
-                |> listMapToFastSetsAndUnify
-                    grainTypeContainedRecords
+            FastSet.union
+                (if typeConstruct.name |> String.startsWith "Generated_" then
+                    FastSet.singleton
+                        (typeConstruct.name
+                            |> String.split "_"
+                            |> List.drop 1
+                            |> List.filter (\field -> field /= "")
+                            |> List.map variableNameDisambiguateFromGrainKeywords
+                            |> List.sort
+                        )
+
+                 else
+                    FastSet.empty
+                )
+                (typeConstruct.arguments
+                    |> listMapToFastSetsAndUnify
+                        grainTypeContainedRecords
+                )
 
 
 grainExpressionContainedConstructedRecords :
@@ -912,8 +928,7 @@ printGrainEnumTypeDeclaration :
     -> Print
 printGrainEnumTypeDeclaration grainEnumType =
     Print.exactly
-        ("enum "
-            ++ grainEnumType.name
+        (grainEnumType.name
             ++ (grainEnumType.parameters
                     |> grainTypeParametersToString
                )
@@ -1022,8 +1037,7 @@ printGrainTypeAliasDeclaration :
     -> Print
 printGrainTypeAliasDeclaration grainTypeAliasDeclaration =
     Print.exactly
-        ("type "
-            ++ grainTypeAliasDeclaration.name
+        (grainTypeAliasDeclaration.name
             ++ (grainTypeAliasDeclaration.parameters
                     |> grainTypeParametersToString
                )
@@ -1135,6 +1149,7 @@ type_ moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxType) =
                                                 , name = name
                                                 }
                                                     |> referenceToGrainName
+                                                    |> stringFirstCharToUpper
                                             }
                             in
                             GrainTypeConstruct
@@ -1218,41 +1233,53 @@ type_ moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxType) =
 
         Elm.Syntax.TypeAnnotation.FunctionTypeAnnotation inputNode outputNode ->
             Result.map2
-                (\input output ->
-                    GrainTypeFunction
-                        { input = input
-                        , output = output
-                        }
+                (\input0 outputExpandedReverse ->
+                    -- TODO why reverse ??
+                    case outputExpandedReverse |> List.reverse of
+                        output :: inputLastTo1 ->
+                            GrainTypeFunction
+                                { input = input0 :: (inputLastTo1 |> List.reverse)
+                                , output = output
+                                }
+
+                        -- too lazy to make it non-empty
+                        [] ->
+                            input0
                 )
                 (inputNode |> type_ moduleOriginLookup)
-                (outputNode |> type_ moduleOriginLookup)
+                (outputNode
+                    |> typeExpandFunctionOutputReverse
+                    |> listMapAndCombineOk
+                        (\partOfOutput ->
+                            type_ moduleOriginLookup partOfOutput
+                        )
+                )
 
         Elm.Syntax.TypeAnnotation.GenericRecord _ _ ->
             Err "extensible record types are not supported"
 
 
-grainTypeExpandFunctionOutput : GrainType -> List GrainType
-grainTypeExpandFunctionOutput grainType =
-    grainTypeExpandFunctionOutputInto [] grainType
+typeExpandFunctionOutputReverse :
+    Elm.Syntax.Node.Node Elm.Syntax.TypeAnnotation.TypeAnnotation
+    -> List (Elm.Syntax.Node.Node Elm.Syntax.TypeAnnotation.TypeAnnotation)
+typeExpandFunctionOutputReverse typeNode =
+    typeExpandFunctionOutputIntoReverse [] typeNode
         |> List.reverse
 
 
-grainTypeExpandFunctionOutputInto : List GrainType -> GrainType -> List GrainType
-grainTypeExpandFunctionOutputInto soFar grainType =
-    case grainType of
-        GrainTypeFunction function ->
-            grainTypeExpandFunctionOutputInto
-                (function.input :: soFar)
-                function.output
+typeExpandFunctionOutputIntoReverse :
+    List (Elm.Syntax.Node.Node Elm.Syntax.TypeAnnotation.TypeAnnotation)
+    -> Elm.Syntax.Node.Node Elm.Syntax.TypeAnnotation.TypeAnnotation
+    -> List (Elm.Syntax.Node.Node Elm.Syntax.TypeAnnotation.TypeAnnotation)
+typeExpandFunctionOutputIntoReverse soFarReverse (Elm.Syntax.Node.Node fullRange syntaxType) =
+    case syntaxType of
+        Elm.Syntax.TypeAnnotation.FunctionTypeAnnotation inputNode outputNode ->
+            typeExpandFunctionOutputIntoReverse
+                (inputNode :: soFarReverse)
+                outputNode
 
-        GrainTypeConstruct construct ->
-            GrainTypeConstruct construct :: soFar
-
-        GrainTypeTuple parts ->
-            GrainTypeTuple parts :: soFar
-
-        GrainTypeVariable variable ->
-            GrainTypeVariable variable :: soFar
+        otherType ->
+            Elm.Syntax.Node.Node fullRange otherType :: soFarReverse
 
 
 grainTypeVoid : GrainType
@@ -1281,42 +1308,51 @@ printGrainTypeNotParenthesized grainType =
             printGrainTypeFunction typeFunction
 
 
-printGrainTypeFunction : { input : GrainType, output : GrainType } -> Print
+printGrainTypeFunction :
+    { input : List GrainType, output : GrainType }
+    -> Print
 printGrainTypeFunction typeFunction =
     let
-        inputPrint : Print
-        inputPrint =
+        inputPrints : List Print
+        inputPrints =
+            typeFunction.input
+                |> List.map printGrainTypeNotParenthesized
+
+        outputPrint : Print
+        outputPrint =
             printGrainTypeParenthesizedIfSpaceSeparated
-                typeFunction.input
+                typeFunction.output
 
-        outputExpanded : List GrainType
-        outputExpanded =
-            grainTypeExpandFunctionOutput typeFunction.output
-
-        outputPrints : List Print
-        outputPrints =
-            outputExpanded
-                |> List.map
-                    printGrainTypeParenthesizedIfSpaceSeparated
+        inputLineSpread : Print.LineSpread
+        inputLineSpread =
+            inputPrints
+                |> Print.lineSpreadListMapAndCombine
+                    Print.lineSpread
 
         fullLineSpread : Print.LineSpread
         fullLineSpread =
-            inputPrint
-                |> Print.lineSpread
+            inputLineSpread
                 |> Print.lineSpreadMergeWith
                     (\() ->
-                        outputPrints
-                            |> Print.lineSpreadListMapAndCombine
-                                Print.lineSpread
+                        outputPrint |> Print.lineSpread
                     )
     in
-    inputPrint
-        :: outputPrints
-        |> Print.listIntersperseAndFlatten
-            (Print.exactly " =>"
-                |> Print.followedBy
-                    (Print.spaceOrLinebreakIndented fullLineSpread)
+    Print.exactly "("
+        |> Print.followedBy
+            (inputPrints
+                |> Print.listMapAndIntersperseAndFlatten
+                    (\inputPrint -> Print.withIndentIncreasedBy 1 inputPrint)
+                    (Print.exactly ","
+                        |> Print.followedBy
+                            (Print.spaceOrLinebreakIndented inputLineSpread)
+                    )
             )
+        |> Print.followedBy (Print.exactly ")")
+        |> Print.followedBy
+            (Print.exactly " =>")
+        |> Print.followedBy
+            (Print.spaceOrLinebreakIndented fullLineSpread)
+        |> Print.followedBy outputPrint
 
 
 printGrainTypeTuple :
@@ -1366,7 +1402,6 @@ printGrainTypeConstruct typeConstruct =
                     { moduleOrigin = typeConstruct.moduleOrigin
                     , name = typeConstruct.name
                     }
-                    |> stringFirstCharToUpper
                 )
     in
     case typeConstruct.arguments of
@@ -2273,7 +2308,7 @@ referenceToCoreGrain reference =
                     Just { moduleOrigin = Nothing, name = "identity" }
 
                 "always" ->
-                    Just { moduleOrigin = Just "Fun", name = "const" }
+                    Just { moduleOrigin = Nothing, name = "basics_always" }
 
                 "compare" ->
                     Just { moduleOrigin = Nothing, name = "basics_compare" }
@@ -2312,10 +2347,10 @@ referenceToCoreGrain reference =
                     Just { moduleOrigin = Nothing, name = "basics_neq" }
 
                 "Int" ->
-                    Just { moduleOrigin = Nothing, name = "float" }
+                    Just { moduleOrigin = Nothing, name = "Number" }
 
                 "Float" ->
-                    Just { moduleOrigin = Nothing, name = "float" }
+                    Just { moduleOrigin = Nothing, name = "Number" }
 
                 "e" ->
                     Just { moduleOrigin = Just "Number", name = "e" }
@@ -2445,6 +2480,9 @@ referenceToCoreGrain reference =
                 "repeat" ->
                     Just { moduleOrigin = Nothing, name = "string_repeat" }
 
+                "replace" ->
+                    Just { moduleOrigin = Just "String", name = "replaceAll" }
+
                 "lines" ->
                     Just { moduleOrigin = Nothing, name = "string_lines" }
 
@@ -2499,16 +2537,16 @@ referenceToCoreGrain reference =
                     Just { moduleOrigin = Nothing, name = "Char" }
 
                 "toCode" ->
-                    Just { moduleOrigin = Just "char", name = "code" }
+                    Just { moduleOrigin = Just "Char", name = "code" }
 
                 "fromCode" ->
                     Just { moduleOrigin = Nothing, name = "char_fromCode" }
 
                 "toLower" ->
-                    Just { moduleOrigin = Just "Char", name = "toAsciiLowercase" }
+                    Just { moduleOrigin = Just "Char.Ascii", name = "toLowercase" }
 
                 "toUpper" ->
-                    Just { moduleOrigin = Just "Char", name = "toAsciUppercase" }
+                    Just { moduleOrigin = Just "Char.Ascii", name = "toUppercase" }
 
                 _ ->
                     Nothing
@@ -3641,13 +3679,7 @@ modules syntaxDeclarationsIncludingOverwrittenOnes =
                 |> FastDict.map
                     (\_ typeAliasInfo ->
                         { parameters = typeAliasInfo.parameters
-                        , variants =
-                            typeAliasInfo.variants
-                                -- TODO i below reported by simplify
-                                |> FastDict.map
-                                    (\_ variantValues ->
-                                        variantValues
-                                    )
+                        , variants = typeAliasInfo.variants
                         }
                     )
         , recordTypes = additionalRecordTypeAliases
@@ -3726,7 +3758,17 @@ valueOrFunctionDeclaration moduleOriginLookup syntaxDeclarationValueOrFunction =
                     , parameters =
                         parameters
                             |> List.map .pattern
-                    , result = result
+                    , result =
+                        case parameters of
+                            [] ->
+                                result
+
+                            parameter0 :: parameter1Up ->
+                                GrainExpressionLambda
+                                    { parameter0 = parameter0.pattern
+                                    , parameter1Up = parameter1Up |> List.map .pattern
+                                    , result = result
+                                    }
                     }
                 )
                 (implementation.expression
@@ -4193,7 +4235,7 @@ expression context (Elm.Syntax.Node.Node _ syntaxExpression) =
                     GrainExpressionCall
                         { called =
                             GrainExpressionReference
-                                { moduleOrigin = Just "Float", name = "neg" }
+                                { moduleOrigin = Just "Number", name = "neg" }
                         , argument0 = inNegation
                         , argument1Up = []
                         }
@@ -4839,22 +4881,22 @@ expressionOperatorToGrainFunctionReference :
 expressionOperatorToGrainFunctionReference operatorSymbol =
     case operatorSymbol of
         "+" ->
-            Ok { moduleOrigin = Just "Float", name = "add" }
+            Ok { moduleOrigin = Nothing, name = "basics_add" }
 
         "-" ->
-            Ok { moduleOrigin = Just "Float", name = "sub" }
+            Ok { moduleOrigin = Nothing, name = "basics_sub" }
 
         "*" ->
-            Ok { moduleOrigin = Just "Float", name = "sub" }
+            Ok { moduleOrigin = Nothing, name = "basics_mul" }
 
         "/" ->
-            Ok { moduleOrigin = Just "Float", name = "div" }
+            Ok { moduleOrigin = Nothing, name = "basics_fdiv" }
 
         "//" ->
             Ok { moduleOrigin = Nothing, name = "basics_idiv" }
 
         "^" ->
-            Ok { moduleOrigin = Just "Float", name = "pow" }
+            Ok { moduleOrigin = Nothing, name = "basics_pow" }
 
         "==" ->
             Ok { moduleOrigin = Nothing, name = "basics_eq" }
@@ -4881,7 +4923,7 @@ expressionOperatorToGrainFunctionReference operatorSymbol =
             Ok { moduleOrigin = Nothing, name = "basics_ge" }
 
         "::" ->
-            Ok { moduleOrigin = Just "List", name = "cons" }
+            Ok { moduleOrigin = Nothing, name = "list_cons" }
 
         "++" ->
             Ok { moduleOrigin = Just "List", name = "append" }
@@ -4938,6 +4980,11 @@ printGrainValueOrFunctionDeclaration grainValueOrFunctionDeclaration =
             )
 
 
+type GrainValueOrFunctionDependencyBucket element
+    = GrainValueOrFunctionDependencySingle element
+    | GrainValueOrFunctionDependencyRecursiveBucket (List element)
+
+
 grainValueOrFunctionDeclarationsGroupByDependencies :
     List
         { name : String
@@ -4948,10 +4995,6 @@ grainValueOrFunctionDeclarationsGroupByDependencies :
         { mostToLeastDependedOn :
             List
                 (GrainValueOrFunctionDependencyBucket
-                    { result : GrainExpression
-                    , type_ : Maybe GrainType
-                    , name : String
-                    }
                     { name : String
                     , result : GrainExpression
                     , type_ : Maybe GrainType
@@ -4988,8 +5031,7 @@ grainValueOrFunctionDeclarationsGroupByDependencies grainValueOrFunctionDeclarat
                 (\grainValueOrFunctionDependencyGroup ->
                     case grainValueOrFunctionDependencyGroup of
                         Data.Graph.CyclicSCC recursiveGroup ->
-                            GrainValueOrFunctionDependencyRecursiveBucket
-                                recursiveGroup
+                            GrainValueOrFunctionDependencyRecursiveBucket recursiveGroup
 
                         Data.Graph.AcyclicSCC single ->
                             GrainValueOrFunctionDependencySingle single
@@ -4997,9 +5039,129 @@ grainValueOrFunctionDeclarationsGroupByDependencies grainValueOrFunctionDeclarat
     }
 
 
-type GrainValueOrFunctionDependencyBucket single recursiveGroupElement
-    = GrainValueOrFunctionDependencySingle single
-    | GrainValueOrFunctionDependencyRecursiveBucket (List recursiveGroupElement)
+type GrainEnumTypeOrTypeAliasDeclaration
+    = GrainEnumTypeDeclaration
+        { name : String
+        , parameters : List String
+        , variants : FastDict.Dict String (List GrainType)
+        }
+    | GrainTypeAliasDeclaration
+        { name : String
+        , parameters : List String
+        , type_ : GrainType
+        }
+
+
+grainTypeDeclarationsGroupByDependencies :
+    { typeAliases :
+        List
+            { name : String
+            , parameters : List String
+            , type_ : GrainType
+            }
+    , enums :
+        List
+            { name : String
+            , parameters : List String
+            , variants : FastDict.Dict String (List GrainType)
+            }
+    }
+    ->
+        { mostToLeastDependedOn :
+            List
+                (GrainValueOrFunctionDependencyBucket
+                    GrainEnumTypeOrTypeAliasDeclaration
+                )
+        }
+grainTypeDeclarationsGroupByDependencies grainTypeDeclarations =
+    let
+        ordered : List (Data.Graph.SCC GrainEnumTypeOrTypeAliasDeclaration)
+        ordered =
+            Data.Graph.stronglyConnComp
+                ((grainTypeDeclarations.typeAliases
+                    |> List.map
+                        (\aliasDeclaration ->
+                            ( GrainTypeAliasDeclaration aliasDeclaration
+                            , aliasDeclaration.name
+                            , aliasDeclaration.type_
+                                |> grainTypeContainedLocalReferences
+                                |> FastSet.toList
+                            )
+                        )
+                 )
+                    ++ (grainTypeDeclarations.enums
+                            |> List.map
+                                (\enumDeclaration ->
+                                    ( GrainEnumTypeDeclaration enumDeclaration
+                                    , enumDeclaration.name
+                                    , enumDeclaration.variants
+                                        |> FastDict.foldl
+                                            (\_ variantValues soFar ->
+                                                FastSet.union
+                                                    (variantValues
+                                                        |> listMapToFastSetsAndUnify
+                                                            grainTypeContainedLocalReferences
+                                                    )
+                                                    soFar
+                                            )
+                                            FastSet.empty
+                                        |> FastSet.toList
+                                    )
+                                )
+                       )
+                )
+    in
+    { mostToLeastDependedOn =
+        ordered
+            |> List.map
+                (\grainValueOrFunctionDependencyGroup ->
+                    case grainValueOrFunctionDependencyGroup of
+                        Data.Graph.CyclicSCC recursiveGroup ->
+                            GrainValueOrFunctionDependencyRecursiveBucket recursiveGroup
+
+                        Data.Graph.AcyclicSCC single ->
+                            GrainValueOrFunctionDependencySingle single
+                )
+    }
+
+
+grainTypeContainedLocalReferences : GrainType -> FastSet.Set String
+grainTypeContainedLocalReferences grainType =
+    -- IGNORE TCO
+    case grainType of
+        GrainTypeVariable _ ->
+            FastSet.empty
+
+        GrainTypeTuple parts ->
+            FastSet.union
+                (parts.part0 |> grainTypeContainedLocalReferences)
+                (FastSet.union
+                    (parts.part1 |> grainTypeContainedLocalReferences)
+                    (parts.part2Up
+                        |> listMapToFastSetsAndUnify
+                            grainTypeContainedLocalReferences
+                    )
+                )
+
+        GrainTypeConstruct typeConstruct ->
+            FastSet.union
+                (case typeConstruct.moduleOrigin of
+                    Nothing ->
+                        FastSet.singleton typeConstruct.name
+
+                    Just _ ->
+                        FastSet.empty
+                )
+                (typeConstruct.arguments
+                    |> listMapToFastSetsAndUnify grainTypeContainedLocalReferences
+                )
+
+        GrainTypeFunction typeFunction ->
+            FastSet.union
+                (typeFunction.input
+                    |> listMapToFastSetsAndUnify grainTypeContainedLocalReferences
+                )
+                (typeFunction.output |> grainTypeContainedLocalReferences)
 
 
 qualifiedReferenceToGrainName :
@@ -5065,7 +5227,7 @@ grainExpressionIsSpaceSeparated grainExpression =
             False
 
         GrainExpressionCall _ ->
-            True
+            False
 
         GrainExpressionLambda _ ->
             True
@@ -5175,7 +5337,7 @@ printGrainExpressionTuple parts =
                     |> Print.listIntersperseAndFlatten
                         (Print.exactly ","
                             |> Print.followedBy
-                                (Print.emptyOrLinebreakIndented lineSpread)
+                                (Print.spaceOrLinebreakIndented lineSpread)
                         )
                 )
             )
@@ -5522,10 +5684,6 @@ printGrainExpressionWithLetDeclarations syntaxLetIn =
             { mostToLeastDependedOn :
                 List
                     (GrainValueOrFunctionDependencyBucket
-                        { result : GrainExpression
-                        , type_ : Maybe GrainType
-                        , name : String
-                        }
                         { name : String
                         , result : GrainExpression
                         , type_ : Maybe GrainType
@@ -5655,10 +5813,6 @@ grainDeclarationsToModuleString grainDeclarations =
             { mostToLeastDependedOn :
                 List
                     (GrainValueOrFunctionDependencyBucket
-                        { result : GrainExpression
-                        , type_ : Maybe GrainType
-                        , name : String
-                        }
                         { name : String
                         , result : GrainExpression
                         , type_ : Maybe GrainType
@@ -5675,6 +5829,35 @@ grainDeclarationsToModuleString grainDeclarations =
                         }
                     )
                 |> grainValueOrFunctionDeclarationsGroupByDependencies
+
+        typeDeclarationsOrdered :
+            { mostToLeastDependedOn :
+                List
+                    (GrainValueOrFunctionDependencyBucket
+                        GrainEnumTypeOrTypeAliasDeclaration
+                    )
+            }
+        typeDeclarationsOrdered =
+            grainTypeDeclarationsGroupByDependencies
+                { typeAliases =
+                    grainDeclarations.typeAliases
+                        |> fastDictMapAndToList
+                            (\name info ->
+                                { name = name
+                                , parameters = info.parameters
+                                , type_ = info.type_
+                                }
+                            )
+                , enums =
+                    grainDeclarations.enumTypes
+                        |> fastDictMapAndToList
+                            (\name info ->
+                                { name = name
+                                , parameters = info.parameters
+                                , variants = info.variants
+                                }
+                            )
+                }
     in
     """module Elm
 
@@ -5708,16 +5891,61 @@ from "string" include String
         ++ """
 
 """
-        ++ (grainDeclarations.typeAliases
-                |> fastDictMapAndToList
-                    (\name typeAliasInfo ->
-                        printGrainTypeAliasDeclaration
-                            { name = name
-                            , parameters = typeAliasInfo.parameters
-                            , type_ = typeAliasInfo.type_
-                            }
+        ++ (typeDeclarationsOrdered.mostToLeastDependedOn
+                |> Print.listMapAndIntersperseAndFlatten
+                    (\typeAliasDeclarationGroup ->
+                        case typeAliasDeclarationGroup of
+                            GrainValueOrFunctionDependencySingle single ->
+                                case single of
+                                    GrainEnumTypeDeclaration enumDeclaration ->
+                                        Print.exactly "enum "
+                                            |> Print.followedBy
+                                                (printGrainEnumTypeDeclaration enumDeclaration)
+
+                                    GrainTypeAliasDeclaration aliasDeclaration ->
+                                        Print.exactly "type "
+                                            |> Print.followedBy
+                                                (printGrainTypeAliasDeclaration aliasDeclaration)
+
+                            GrainValueOrFunctionDependencyRecursiveBucket recursiveBucket ->
+                                case recursiveBucket of
+                                    [] ->
+                                        Print.empty
+
+                                    recursiveBucketMember0 :: recursiveBucketMember1Up ->
+                                        (case recursiveBucketMember0 of
+                                            GrainEnumTypeDeclaration enumDeclaration ->
+                                                Print.exactly "enum rec "
+                                                    |> Print.followedBy
+                                                        (printGrainEnumTypeDeclaration enumDeclaration)
+
+                                            GrainTypeAliasDeclaration aliasDeclaration ->
+                                                Print.exactly "type rec "
+                                                    |> Print.followedBy
+                                                        (printGrainTypeAliasDeclaration aliasDeclaration)
+                                        )
+                                            |> Print.followedBy
+                                                (recursiveBucketMember1Up
+                                                    |> Print.listMapAndIntersperseAndFlatten
+                                                        (\typeDeclaration ->
+                                                            Print.linebreak
+                                                                |> Print.followedBy Print.linebreak
+                                                                |> Print.followedBy
+                                                                    (case typeDeclaration of
+                                                                        GrainEnumTypeDeclaration enumDeclaration ->
+                                                                            Print.exactly "and enum "
+                                                                                |> Print.followedBy
+                                                                                    (printGrainEnumTypeDeclaration enumDeclaration)
+
+                                                                        GrainTypeAliasDeclaration aliasDeclaration ->
+                                                                            Print.exactly "and type "
+                                                                                |> Print.followedBy
+                                                                                    (printGrainTypeAliasDeclaration aliasDeclaration)
+                                                                    )
+                                                        )
+                                                        Print.empty
+                                                )
                     )
-                |> Print.listIntersperseAndFlatten
                     (Print.linebreak
                         |> Print.followedBy Print.linebreak
                     )
@@ -5725,25 +5953,7 @@ from "string" include String
            )
         ++ """
 
-"""
-        ++ (grainDeclarations.enumTypes
-                |> fastDictMapAndToList
-                    (\name enumTypeInfo ->
-                        printGrainEnumTypeDeclaration
-                            { name = name
-                            , parameters = enumTypeInfo.parameters
-                            , variants = enumTypeInfo.variants
-                            }
-                    )
-                |> Print.listIntersperseAndFlatten
-                    (Print.linebreak
-                        |> Print.followedBy Print.linebreak
-                        |> Print.followedBy
-                            (Print.exactly "and ")
-                    )
-                |> Print.toString
-           )
-        ++ """
+
 """
         ++ ((valueAndFunctionDeclarationsOrdered.mostToLeastDependedOn
                 |> Print.listMapAndIntersperseAndFlatten
@@ -5757,7 +5967,14 @@ from "string" include String
                                     |> Print.followedBy Print.linebreakIndented
 
                             GrainValueOrFunctionDependencyRecursiveBucket recursiveGroup ->
-                                Print.exactly "provide let rec "
+                                -- TODO only use rec when result not a lambda
+                                (case recursiveGroup of
+                                    [ _ ] ->
+                                        Print.exactly "provide let rec "
+
+                                    _ ->
+                                        Print.exactly "provide let "
+                                )
                                     |> Print.followedBy
                                         (recursiveGroup
                                             |> Print.listMapAndIntersperseAndFlatten
@@ -5779,7 +5996,9 @@ from "string" include String
 
 defaultDeclarations : String
 defaultDeclarations =
-    """let basics_eq: (a, a) => Bool = (a, b) => a == b
+    """let basics_always: ( kept, ignored ) => kept = ( kept, _ ) => kept
+
+let basics_eq: (a, a) => Bool = (a, b) => a == b
 let basics_neq: (a, a) => Bool = (a, b) => a != b
 let basics_lt: (Number, Number) => Bool = (a, b) => a < b
 let basics_gt: (Number, Number) => Bool = (a, b) => a > b
@@ -5807,6 +6026,15 @@ let basics_OrderToInt: Basics_Order => int = order => match (order) {
 let basics_compare: (a, a) => Basics_Order = (a, b) =>
   intToBasics_Order(compare(a, b))
 
+let basics_add: (Number, Number) => Number = ( a, b ) => a + b
+let basics_sub: (Number, Number) => Number = ( a, b ) => a - b
+let basics_mul: (Number, Number) => Number = ( a, b ) => a * b
+let basics_pow: (Number, Number) => Number = ( base, exponent ) =>
+    base ** exponent
+let basics_fdiv: (Number, Number) => Number = ( toDivide, divisor ) =>
+    toDivide / divisor
+let basics_idiv: (Number, Number) => Number = ( toDivide, divisor ) =>
+    Number.trunc(toDivide / divisor)
 let basics_modBy: (Number, Number) => Number = (divisor, toDivide) =>
   toDivide % divisor
 let basics_remainderBy: (Number, Number) => Number = (divisor, toDivide) => {
@@ -5822,10 +6050,6 @@ let basics_remainderBy: (Number, Number) => Number = (divisor, toDivide) => {
     modulus
   }
 }
-let basics_fdiv: (Number, Number) => Number = (toDivide, divisor) =>
-  Number.(/)(toDivide, divisor)
-let basics_idiv: (Number, Number) => Number = (toDivide, divisor) =>
-  Number.trunc(Number.(/)(toDivide, divisor))
 
 let basics_or: (Bool, Bool) => Bool = (a, b) => a || b
 let basics_and: (Bool, Bool) => Bool = (a, b) => a && b
@@ -5839,6 +6063,8 @@ let char_fromCode: Number => Char = charCode =>
   }
 
 let list_singleton: a => List<a> = onlyElement => [onlyElement]
+let list_cons: ( a, List<a> ) => List<a> = ( newHead, tail ) =>
+    [newHead, ...tail]
 let list_sort: List<a> => List<a> = list => List.sort(compare=compare, list)
 let list_sortWith: ((a, a) => Basics_Order, List<a>) => List<a> = (
   elementCompare,
