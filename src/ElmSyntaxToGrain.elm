@@ -1234,8 +1234,7 @@ type_ moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxType) =
         Elm.Syntax.TypeAnnotation.FunctionTypeAnnotation inputNode outputNode ->
             Result.map2
                 (\input0 outputExpandedReverse ->
-                    -- TODO why reverse ??
-                    case outputExpandedReverse |> List.reverse of
+                    case outputExpandedReverse of
                         output :: inputLastTo1 ->
                             GrainTypeFunction
                                 { input = input0 :: (inputLastTo1 |> List.reverse)
@@ -1264,7 +1263,6 @@ typeExpandFunctionOutputReverse :
     -> List (Elm.Syntax.Node.Node Elm.Syntax.TypeAnnotation.TypeAnnotation)
 typeExpandFunctionOutputReverse typeNode =
     typeExpandFunctionOutputIntoReverse [] typeNode
-        |> List.reverse
 
 
 typeExpandFunctionOutputIntoReverse :
