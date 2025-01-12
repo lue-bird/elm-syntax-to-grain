@@ -68,7 +68,7 @@ type GrainPattern
     | GrainPatternListCons
         { initialElement0 : GrainPattern
         , initialElement1Up : List GrainPattern
-        , tailVariable : Maybe String
+        , tailVariable : Maybe GrainPattern
         }
     | GrainPatternListExact (List GrainPattern)
     | GrainPatternRecordInexhaustive (FastSet.Set String)
@@ -1985,69 +1985,17 @@ pattern moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxPattern) =
                                     tailGrainPattern.introducedVariables
                                 )
                     in
-                    case tailGrainPattern.pattern of
-                        GrainPatternVariable variable ->
-                            Ok
-                                { pattern =
-                                    GrainPatternListCons
-                                        { initialElement0 = initialElement0.pattern
-                                        , initialElement1Up =
-                                            initialElement1Up
-                                                |> List.map .pattern
-                                        , tailVariable = Just variable
-                                        }
-                                , introducedVariables = introducedVariables
+                    Ok
+                        { pattern =
+                            GrainPatternListCons
+                                { initialElement0 = initialElement0.pattern
+                                , initialElement1Up =
+                                    initialElement1Up
+                                        |> List.map .pattern
+                                , tailVariable = Just tailGrainPattern.pattern
                                 }
-
-                        GrainPatternIgnore ->
-                            Ok
-                                { pattern =
-                                    GrainPatternListCons
-                                        { initialElement0 = initialElement0.pattern
-                                        , initialElement1Up =
-                                            initialElement1Up
-                                                |> List.map .pattern
-                                        , tailVariable = Nothing
-                                        }
-                                , introducedVariables = introducedVariables
-                                }
-
-                        GrainPatternListExact tailExactElements ->
-                            Ok
-                                { pattern =
-                                    GrainPatternListExact
-                                        (initialElement0.pattern
-                                            :: (initialElement1Up
-                                                    |> List.map .pattern
-                                               )
-                                            ++ tailExactElements
-                                        )
-                                , introducedVariables = introducedVariables
-                                }
-
-                        GrainPatternNumber _ ->
-                            Err "list tail pattern can only be ignored or a variable"
-
-                        GrainPatternChar _ ->
-                            Err "list tail pattern can only be ignored or a variable"
-
-                        GrainPatternString _ ->
-                            Err "list tail pattern can only be ignored or a variable"
-
-                        GrainPatternRecordInexhaustive _ ->
-                            Err "list tail pattern can only be ignored or a variable"
-
-                        GrainPatternAs _ ->
-                            Err "list tail pattern can only be ignored or a variable"
-
-                        GrainPatternListCons _ ->
-                            Err "list tail pattern can only be ignored or a variable"
-
-                        GrainPatternVariant _ ->
-                            Err "list tail pattern can only be ignored or a variable"
-
-                        GrainPatternTuple _ ->
-                            Err "list tail pattern can only be ignored or a variable"
+                        , introducedVariables = introducedVariables
+                        }
                 )
                 (headPatternNode |> pattern moduleOriginLookup)
                 (tailExpanded.initialElements
@@ -2141,7 +2089,7 @@ pattern moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxPattern) =
 printGrainPatternListCons :
     { initialElement0 : GrainPattern
     , initialElement1Up : List GrainPattern
-    , tailVariable : Maybe String
+    , tailVariable : Maybe GrainPattern
     }
     -> Print
 printGrainPatternListCons syntaxCons =
@@ -2156,18 +2104,17 @@ printGrainPatternListCons syntaxCons =
                     (Print.exactly ", ")
             )
         |> Print.followedBy
-            (Print.exactly
-                (", ..."
-                    ++ (case syntaxCons.tailVariable of
-                            Nothing ->
-                                "_"
+            (Print.exactly ", ...")
+        |> Print.followedBy
+            (case syntaxCons.tailVariable of
+                Nothing ->
+                    Print.exactly "_"
 
-                            Just tailVariable ->
-                                tailVariable
-                       )
-                    ++ "]"
-                )
+                Just tailVariable ->
+                    printGrainPatternParenthesizedIfSpaceSeparated tailVariable
             )
+        |> Print.followedBy
+            (Print.exactly "]")
 
 
 patternConsExpand :
