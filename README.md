@@ -1,4 +1,4 @@
-> Status: only TODO: only use let rec when result not a lambda
+> Status: only TODO: correctly move destructure declarations in dependency chain
 
 Print pure [`elm-syntax`](https://dark.elm.dmy.fr/packages/stil4m/elm-syntax/latest/) declarations as
 [grain](https://grain-lang.org/) code.

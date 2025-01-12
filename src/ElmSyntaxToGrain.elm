@@ -4029,7 +4029,7 @@ expression context (Elm.Syntax.Node.Node _ syntaxExpression) =
                                     { called =
                                         GrainExpressionReference
                                             { moduleOrigin = Just "String"
-                                            , name = "cat"
+                                            , name = "concat"
                                             }
                                     , argument0 = left
                                     , argument1Up = [ right ]
@@ -4152,14 +4152,12 @@ expression context (Elm.Syntax.Node.Node _ syntaxExpression) =
                                                 GrainExpressionCall
                                                     { called = GrainExpressionReference reference
                                                     , argument0 =
-                                                        GrainExpressionTuple
-                                                            { part0 = generatedValueVariableReference 0
-                                                            , part1 = generatedValueVariableReference 1
-                                                            , part2Up =
-                                                                List.range 2 (valueCountAtLeast2 - 1)
+                                                        generatedValueVariableReference 0
+                                                    , argument1Up =
+                                                        generatedValueVariableReference 1
+                                                            :: (List.range 2 (valueCountAtLeast2 - 1)
                                                                     |> List.map generatedValueVariableReference
-                                                            }
-                                                    , argument1Up = []
+                                                               )
                                                     }
                                             }
                                 )
@@ -4658,7 +4656,7 @@ grainExpressionIsDefinitelyOfTypeString grainExpression =
 
         GrainExpressionCall call ->
             call.called
-                == GrainExpressionReference { moduleOrigin = Just "String", name = "cat" }
+                == GrainExpressionReference { moduleOrigin = Just "String", name = "concat" }
                 && ((call.argument1Up |> List.length) == 1)
 
         GrainExpressionChar _ ->
@@ -4972,8 +4970,8 @@ printGrainValueOrFunctionDeclaration grainValueOrFunctionDeclaration =
                     |> Print.followedBy
                         (Print.linebreakIndented
                             |> Print.followedBy
-                                (grainValueOrFunctionDeclaration.result
-                                    |> printGrainExpressionParenthesizedIfSpaceSeparated
+                                (printGrainExpressionParenthesizedIfWithLetDeclarations
+                                    grainValueOrFunctionDeclaration.result
                                 )
                         )
                 )
@@ -5191,6 +5189,22 @@ printGrainExpressionParenthesizedIfSpaceSeparated grainExpression =
 
     else
         printGrainExpressionNotParenthesized grainExpression
+
+
+printGrainExpressionParenthesizedIfWithLetDeclarations : GrainExpression -> Print
+printGrainExpressionParenthesizedIfWithLetDeclarations grainExpression =
+    case grainExpression of
+        GrainExpressionWithLetDeclarations grainExpressionWithLetDeclarations ->
+            printParenthesized
+                { opening = "{"
+                , closing = "}"
+                , inner =
+                    printGrainExpressionWithLetDeclarations
+                        grainExpressionWithLetDeclarations
+                }
+
+        grainExpressionNotWithLetDeclarations ->
+            printGrainExpressionNotParenthesized grainExpressionNotWithLetDeclarations
 
 
 grainExpressionIsSpaceSeparated : GrainExpression -> Bool
@@ -5615,12 +5629,12 @@ printGrainExpressionMatch matchWith =
     Print.exactly "match ("
         |> Print.followedBy
             (Print.withIndentAtNextMultipleOf4
-                (Print.spaceOrLinebreakIndented matchedPrintLineSpread
+                (Print.emptyOrLinebreakIndented matchedPrintLineSpread
                     |> Print.followedBy matchedPrint
                 )
             )
         |> Print.followedBy
-            (Print.spaceOrLinebreakIndented matchedPrintLineSpread)
+            (Print.emptyOrLinebreakIndented matchedPrintLineSpread)
         |> Print.followedBy (Print.exactly ") {")
         |> Print.followedBy
             (Print.withIndentAtNextMultipleOf4
@@ -5967,24 +5981,37 @@ from "string" include String
                                     |> Print.followedBy Print.linebreakIndented
 
                             GrainValueOrFunctionDependencyRecursiveBucket recursiveGroup ->
-                                -- TODO only use rec when result not a lambda
-                                (case recursiveGroup of
-                                    [ _ ] ->
-                                        Print.exactly "provide let rec "
+                                case recursiveGroup of
+                                    [ onlyLetValueOrFunction ] ->
+                                        case onlyLetValueOrFunction.result of
+                                            GrainExpressionLambda _ ->
+                                                Print.exactly "provide let rec "
+                                                    |> Print.followedBy
+                                                        ((onlyLetValueOrFunction |> printGrainValueOrFunctionDeclaration)
+                                                            |> Print.followedBy Print.linebreak
+                                                            |> Print.followedBy Print.linebreakIndented
+                                                        )
 
-                                    _ ->
+                                            _ ->
+                                                Print.exactly "provide let "
+                                                    |> Print.followedBy
+                                                        ((onlyLetValueOrFunction |> printGrainValueOrFunctionDeclaration)
+                                                            |> Print.followedBy Print.linebreak
+                                                            |> Print.followedBy Print.linebreakIndented
+                                                        )
+
+                                    recursiveGroupNotSingle ->
                                         Print.exactly "provide let "
-                                )
-                                    |> Print.followedBy
-                                        (recursiveGroup
-                                            |> Print.listMapAndIntersperseAndFlatten
-                                                (\letValueOrFunction ->
-                                                    (letValueOrFunction |> printGrainValueOrFunctionDeclaration)
-                                                        |> Print.followedBy Print.linebreak
-                                                        |> Print.followedBy Print.linebreakIndented
+                                            |> Print.followedBy
+                                                (recursiveGroupNotSingle
+                                                    |> Print.listMapAndIntersperseAndFlatten
+                                                        (\letValueOrFunction ->
+                                                            (letValueOrFunction |> printGrainValueOrFunctionDeclaration)
+                                                                |> Print.followedBy Print.linebreak
+                                                                |> Print.followedBy Print.linebreakIndented
+                                                        )
+                                                        (Print.exactly "and ")
                                                 )
-                                                (Print.exactly "and ")
-                                        )
                     )
                     Print.empty
             )
