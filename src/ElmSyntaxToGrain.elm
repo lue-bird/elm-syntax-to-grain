@@ -4572,6 +4572,13 @@ condenseExpressionCall call =
                                 , argument1Up = argument2Up
                                 }
 
+                ( GrainPatternVariable "generated_0", GrainExpressionCall variantCall ) ->
+                    GrainExpressionCall
+                        { called = variantCall.called
+                        , argument0 = call.argument0
+                        , argument1Up = call.argument1Up
+                        }
+
                 _ ->
                     GrainExpressionCall
                         { called = GrainExpressionLambda calledLambda
