@@ -26,8 +26,8 @@ plus2 n =
 Ok """module Elm
 ..some default declarations..
 
-let sample_plus2 : (Number) => Number = (n) =>
-    basics_add(n, list_sum([ 2 ]))
+provide let sample_plus2 : (Number) => Number =
+    (n) => basics_add(n, list_sum([ 2 ]))
 """
 ```
 
