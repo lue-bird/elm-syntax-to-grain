@@ -1,4 +1,4 @@
-> Status: only TODO: correctly move destructure declarations in dependency chain
+> Status: only TODO: make type inference happy for overlapping field names
 
 Print pure [`elm-syntax`](https://dark.elm.dmy.fr/packages/stil4m/elm-syntax/latest/) declarations as
 [grain](https://grain-lang.org/) code.

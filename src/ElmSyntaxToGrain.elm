@@ -2453,7 +2453,7 @@ referenceToCoreGrain reference =
                     Just { moduleOrigin = Nothing, name = "string_slice" }
 
                 "split" ->
-                    Just { moduleOrigin = Just "String", name = "split" }
+                    Just { moduleOrigin = Nothing, name = "string_split" }
 
                 "contains" ->
                     Just { moduleOrigin = Just "String", name = "contains" }
@@ -2505,7 +2505,7 @@ referenceToCoreGrain reference =
                     Just { moduleOrigin = Just "List", name = "length" }
 
                 "member" ->
-                    Just { moduleOrigin = Just "List", name = "mem" }
+                    Just { moduleOrigin = Nothing, name = "list_member" }
 
                 "sum" ->
                     Just { moduleOrigin = Nothing, name = "list_sum" }
@@ -6265,6 +6265,8 @@ let list_maximum: List<a> => Option<a> = list => match (list) {
   [head, ...tail] => Some(List.reduce(Number.max, head, tail)),
   _ => None,
 }
+let list_member: (a, List<a>) => Bool = (needle, list) =>
+  List.some(el => el == needle, list)
 let list_repeat: (Number, a) => List<a> = (count, element) =>
   List.init(count, (_) => element)
 let list_foldl: ((a, state) => state, state, List<a>) => state = (
@@ -6294,6 +6296,8 @@ let string_concat: List<String> => String = strings =>
   List.join(separator="", strings)
 let string_repeat: (Number, String) => String = (count, segment) =>
   string_concat(list_repeat(count, segment))
+let string_split: (String, String) => List<String> = (separator, string) =>
+    Array.toList(String.split(separator, string))
 let string_slice: (Number, Number, String) => String = (
   startInclusivePossiblyNegative,
   endExclusivePossiblyNegative,
