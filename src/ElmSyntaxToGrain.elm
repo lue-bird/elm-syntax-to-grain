@@ -762,16 +762,19 @@ grainExpressionContainedConstructedRecords :
             (List String)
 grainExpressionContainedConstructedRecords syntaxExpression =
     -- IGNORE TCO
-    case syntaxExpression of
-        GrainExpressionRecord fields ->
-            FastSet.singleton
-                (fields |> FastDict.keys)
+    FastSet.union
+        (case syntaxExpression of
+            GrainExpressionRecord fields ->
+                FastSet.singleton (fields |> FastDict.keys)
 
-        expressionNotRecord ->
-            expressionNotRecord
-                |> grainExpressionSubs
-                |> listMapToFastSetsAndUnify
-                    grainExpressionContainedConstructedRecords
+            _ ->
+                FastSet.empty
+        )
+        (syntaxExpression
+            |> grainExpressionSubs
+            |> listMapToFastSetsAndUnify
+                grainExpressionContainedConstructedRecords
+        )
 
 
 grainExpressionContainedLocalReferences :
@@ -6133,12 +6136,15 @@ from "string" include String
 
                             GrainValueOrFunctionDependencyRecursiveBucket recursiveGroup ->
                                 case recursiveGroup of
-                                    [ onlyLetValueOrFunction ] ->
-                                        case onlyLetValueOrFunction.result of
+                                    [] ->
+                                        Print.empty
+
+                                    grainValueOrFunctionDeclaration0 :: grainValueOrFunctionDeclaration1Up ->
+                                        (case grainValueOrFunctionDeclaration0.result of
                                             GrainExpressionLambda _ ->
                                                 Print.exactly "provide let rec "
                                                     |> Print.followedBy
-                                                        ((onlyLetValueOrFunction |> printGrainValueOrFunctionDeclaration)
+                                                        ((grainValueOrFunctionDeclaration0 |> printGrainValueOrFunctionDeclaration)
                                                             |> Print.followedBy Print.linebreak
                                                             |> Print.followedBy Print.linebreakIndented
                                                         )
@@ -6146,22 +6152,22 @@ from "string" include String
                                             _ ->
                                                 Print.exactly "provide let "
                                                     |> Print.followedBy
-                                                        ((onlyLetValueOrFunction |> printGrainValueOrFunctionDeclaration)
+                                                        ((grainValueOrFunctionDeclaration0 |> printGrainValueOrFunctionDeclaration)
                                                             |> Print.followedBy Print.linebreak
                                                             |> Print.followedBy Print.linebreakIndented
                                                         )
-
-                                    recursiveGroupNotSingle ->
-                                        Print.exactly "provide let "
+                                        )
                                             |> Print.followedBy
-                                                (recursiveGroupNotSingle
+                                                (grainValueOrFunctionDeclaration1Up
                                                     |> Print.listMapAndIntersperseAndFlatten
                                                         (\letValueOrFunction ->
-                                                            (letValueOrFunction |> printGrainValueOrFunctionDeclaration)
+                                                            Print.exactly "and "
+                                                                |> Print.followedBy
+                                                                    (letValueOrFunction |> printGrainValueOrFunctionDeclaration)
                                                                 |> Print.followedBy Print.linebreak
                                                                 |> Print.followedBy Print.linebreakIndented
                                                         )
-                                                        (Print.exactly "and ")
+                                                        Print.empty
                                                 )
                     )
                     Print.empty
