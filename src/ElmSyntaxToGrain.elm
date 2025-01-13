@@ -2465,7 +2465,7 @@ referenceToCoreGrain reference =
                     Just { moduleOrigin = Just "String", name = "toAsciiLowercase" }
 
                 "toUpper" ->
-                    Just { moduleOrigin = Just "String", name = "toAsciUppercase" }
+                    Just { moduleOrigin = Just "String", name = "toAsciiUppercase" }
 
                 _ ->
                     Nothing
@@ -2577,7 +2577,7 @@ referenceToCoreGrain reference =
                     Just { moduleOrigin = Nothing, name = "list_foldl" }
 
                 "foldr" ->
-                    Just { moduleOrigin = Nothing, name = "list_foldr" }
+                    Just { moduleOrigin = Just "List", name = "reduceRight" }
 
                 "head" ->
                     Just { moduleOrigin = Just "List", name = "head" }
@@ -6276,17 +6276,6 @@ let list_foldl: ((a, state) => state, state, List<a>) => state = (
 ) => {
   List.reduce((soFar, element) => reduce(element, soFar), initialState, list)
 }
-let list_foldr: ((a, state) => state, state, List<a>) => state = (
-  reduce,
-  initialState,
-  list,
-) => {
-  List.reduceRight(
-    (soFar, element) => reduce(element, soFar),
-    initialState,
-    list
-  )
-}
 
 let string_toList: String => List<Char> = string =>
   Array.toList(String.explode(string))
@@ -6348,7 +6337,7 @@ let string_foldr: ((Char, state) => state, state, String) => state = (
   string,
 ) => {
   Array.reduceRight(
-    (soFar, element) => reduce(element, soFar),
+    reduce,
     initialState,
     String.explode(string)
   )
