@@ -68,7 +68,7 @@ type GrainPattern
     | GrainPatternListCons
         { initialElement0 : GrainPattern
         , initialElement1Up : List GrainPattern
-        , tailVariable : Maybe GrainPattern
+        , tail : GrainPattern
         }
     | GrainPatternListExact (List GrainPattern)
     | GrainPatternRecordInexhaustive (FastSet.Set String)
@@ -1990,7 +1990,7 @@ pattern moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxPattern) =
                                 , initialElement1Up =
                                     initialElement1Up
                                         |> List.map .pattern
-                                , tailVariable = Just tailGrainPattern.pattern
+                                , tail = tailGrainPattern.pattern
                                 }
                         , introducedVariables = introducedVariables
                         }
@@ -2087,12 +2087,12 @@ pattern moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxPattern) =
 printGrainPatternListCons :
     { initialElement0 : GrainPattern
     , initialElement1Up : List GrainPattern
-    , tailVariable : Maybe GrainPattern
+    , tail : GrainPattern
     }
     -> Print
 printGrainPatternListCons syntaxCons =
     Print.exactly "["
-        |> Print.FollowedBy
+        |> Print.followedBy
             (syntaxCons.initialElement0
                 :: syntaxCons.initialElement1Up
                 |> Print.listMapAndIntersperseAndFlatten
@@ -2104,13 +2104,7 @@ printGrainPatternListCons syntaxCons =
         |> Print.followedBy
             (Print.exactly ", ...")
         |> Print.followedBy
-            (case syntaxCons.tailVariable of
-                Nothing ->
-                    Print.exactly "_"
-
-                Just tailVariable ->
-                    printGrainPatternParenthesizedIfSpaceSeparated tailVariable
-            )
+            (printGrainPatternParenthesizedIfSpaceSeparated syntaxCons.tail)
         |> Print.followedBy
             (Print.exactly "]")
 
@@ -5641,59 +5635,264 @@ printGrainExpressionWithLetDeclarations syntaxLetIn =
 
         ordered :
             { mostToLeastDependedOn :
-                List
-                    (GrainValueOrFunctionDependencyBucket
-                        { name : String
-                        , result : GrainExpression
-                        , type_ : Maybe GrainType
-                        }
-                    )
+                List (GrainValueOrFunctionDependencyBucket GrainLetDeclaration)
             }
         ordered =
-            letValueOrFunctions
-                |> grainValueOrFunctionDeclarationsGroupByDependencies
+            { mostToLeastDependedOn =
+                letValueOrFunctions
+                    |> grainValueOrFunctionDeclarationsGroupByDependencies
+                    |> .mostToLeastDependedOn
+                    |> List.map
+                        (\grainValueOrFunctionDependencyBucket ->
+                            case grainValueOrFunctionDependencyBucket of
+                                GrainValueOrFunctionDependencySingle grainValueOrFunction ->
+                                    GrainValueOrFunctionDependencySingle
+                                        (GrainLetDeclarationValueOrFunction grainValueOrFunction)
+
+                                GrainValueOrFunctionDependencyRecursiveBucket recursiveBucket ->
+                                    GrainValueOrFunctionDependencyRecursiveBucket
+                                        (recursiveBucket
+                                            |> List.map GrainLetDeclarationValueOrFunction
+                                        )
+                        )
+            }
+                |> grainLetDeclarationsInsertGrainLetDestructurings
+                    letDestructurings
     in
-    (letDestructurings
+    (ordered.mostToLeastDependedOn
         |> Print.listMapAndIntersperseAndFlatten
-            (\letDestructuring ->
-                Print.exactly "let "
-                    |> Print.followedBy
-                        (letDestructuring |> printGrainLetDestructuring)
-                    |> Print.followedBy Print.linebreakIndented
-                    |> Print.followedBy Print.linebreakIndented
-            )
-            Print.empty
-    )
-        |> Print.followedBy
-            (ordered.mostToLeastDependedOn
-                |> Print.listMapAndIntersperseAndFlatten
-                    (\dependencyGroup ->
-                        case dependencyGroup of
-                            GrainValueOrFunctionDependencySingle letValueOrFunction ->
+            (\dependencyGroup ->
+                case dependencyGroup of
+                    GrainValueOrFunctionDependencySingle grainLetDeclaration ->
+                        case grainLetDeclaration of
+                            GrainLetDestructuring letDestructuring ->
+                                Print.exactly "let "
+                                    |> Print.followedBy
+                                        (letDestructuring |> printGrainLetDestructuring)
+                                    |> Print.followedBy Print.linebreakIndented
+                                    |> Print.followedBy Print.linebreakIndented
+
+                            GrainLetDeclarationValueOrFunction letValueOrFunction ->
                                 Print.exactly "let "
                                     |> Print.followedBy
                                         (letValueOrFunction |> printGrainValueOrFunctionDeclaration)
                                     |> Print.followedBy Print.linebreakIndented
                                     |> Print.followedBy Print.linebreakIndented
 
-                            GrainValueOrFunctionDependencyRecursiveBucket recursiveGroup ->
-                                Print.exactly "let "
-                                    -- I would have thought let rec
-                                    -- but the compiler disagrees
-                                    |> Print.followedBy
-                                        (recursiveGroup
-                                            |> Print.listMapAndIntersperseAndFlatten
-                                                (\letValueOrFunction ->
+                    GrainValueOrFunctionDependencyRecursiveBucket recursiveGroup ->
+                        Print.exactly "let "
+                            |> -- I would have thought let rec
+                               -- but the compiler disagrees
+                               Print.followedBy
+                                (recursiveGroup
+                                    |> Print.listMapAndIntersperseAndFlatten
+                                        (\grainLetDeclaration ->
+                                            case grainLetDeclaration of
+                                                GrainLetDestructuring letDestructuring ->
+                                                    (letDestructuring |> printGrainLetDestructuring)
+                                                        |> Print.followedBy Print.linebreakIndented
+
+                                                GrainLetDeclarationValueOrFunction letValueOrFunction ->
                                                     (letValueOrFunction |> printGrainValueOrFunctionDeclaration)
                                                         |> Print.followedBy Print.linebreakIndented
-                                                )
-                                                (Print.exactly "and ")
                                         )
-                    )
-                    Print.empty
+                                        (Print.exactly "and ")
+                                )
             )
+            Print.empty
+    )
         |> Print.followedBy
             (printGrainExpressionNotParenthesized syntaxLetIn.result)
+
+
+grainLetDeclarationsInsertGrainLetDestructurings :
+    List { pattern : GrainPattern, expression : GrainExpression }
+    ->
+        { mostToLeastDependedOn :
+            List (GrainValueOrFunctionDependencyBucket GrainLetDeclaration)
+        }
+    ->
+        { mostToLeastDependedOn :
+            List (GrainValueOrFunctionDependencyBucket GrainLetDeclaration)
+        }
+grainLetDeclarationsInsertGrainLetDestructurings grainLetDestructuringsToInsert existingLetDeclarations =
+    grainLetDestructuringsToInsert
+        |> List.foldl
+            (\grainLetDestructuringToInsert soFar ->
+                soFar
+                    |> grainLetDeclarationsInsertGrainLetDestructuring
+                        grainLetDestructuringToInsert
+            )
+            existingLetDeclarations
+
+
+grainLetDeclarationsInsertGrainLetDestructuring :
+    { pattern : GrainPattern, expression : GrainExpression }
+    ->
+        { mostToLeastDependedOn :
+            List (GrainValueOrFunctionDependencyBucket GrainLetDeclaration)
+        }
+    ->
+        { mostToLeastDependedOn :
+            List (GrainValueOrFunctionDependencyBucket GrainLetDeclaration)
+        }
+grainLetDeclarationsInsertGrainLetDestructuring grainLetDestructuringToInsert existingLetDeclarations =
+    let
+        variablesIntroducedInDestructuringPattern : FastSet.Set String
+        variablesIntroducedInDestructuringPattern =
+            grainLetDestructuringToInsert.pattern
+                |> grainPatternContainedVariables
+
+        withLetDestructuring :
+            { destructuringHasBeenInserted : Bool
+            , leastToMostDependedOn :
+                List (GrainValueOrFunctionDependencyBucket GrainLetDeclaration)
+            }
+        withLetDestructuring =
+            existingLetDeclarations.mostToLeastDependedOn
+                |> List.foldl
+                    (\existingLetDeclarationDependencyBucket soFar ->
+                        if soFar.destructuringHasBeenInserted then
+                            { destructuringHasBeenInserted = True
+                            , leastToMostDependedOn =
+                                existingLetDeclarationDependencyBucket
+                                    :: soFar.leastToMostDependedOn
+                            }
+
+                        else
+                            let
+                                existingLetDeclarationUsedLocalReferences : FastSet.Set String
+                                existingLetDeclarationUsedLocalReferences =
+                                    case existingLetDeclarationDependencyBucket of
+                                        GrainValueOrFunctionDependencySingle existingLetDeclaration ->
+                                            existingLetDeclaration
+                                                |> grainLetDeclarationUsedLocalReferences
+
+                                        GrainValueOrFunctionDependencyRecursiveBucket recursiveBucketMembers ->
+                                            recursiveBucketMembers
+                                                |> listMapToFastSetsAndUnify
+                                                    grainLetDeclarationUsedLocalReferences
+                            in
+                            if fastSetsIntersect variablesIntroducedInDestructuringPattern existingLetDeclarationUsedLocalReferences then
+                                { destructuringHasBeenInserted = True
+                                , leastToMostDependedOn =
+                                    existingLetDeclarationDependencyBucket
+                                        :: GrainValueOrFunctionDependencySingle
+                                            (GrainLetDestructuring grainLetDestructuringToInsert)
+                                        :: soFar.leastToMostDependedOn
+                                }
+
+                            else
+                                { destructuringHasBeenInserted = False
+                                , leastToMostDependedOn =
+                                    existingLetDeclarationDependencyBucket
+                                        :: soFar.leastToMostDependedOn
+                                }
+                    )
+                    { destructuringHasBeenInserted = False
+                    , leastToMostDependedOn = []
+                    }
+    in
+    { mostToLeastDependedOn =
+        if withLetDestructuring.destructuringHasBeenInserted then
+            withLetDestructuring.leastToMostDependedOn |> List.reverse
+
+        else
+            GrainValueOrFunctionDependencySingle
+                (GrainLetDestructuring grainLetDestructuringToInsert)
+                :: withLetDestructuring.leastToMostDependedOn
+                |> List.reverse
+    }
+
+
+fastSetsIntersect : FastSet.Set comparable -> FastSet.Set comparable -> Bool
+fastSetsIntersect aSet bSet =
+    aSet
+        |> fastSetAny
+            (\aElement ->
+                bSet |> FastSet.member aElement
+            )
+
+
+fastSetAny : (a -> Bool) -> FastSet.Set a -> Bool
+fastSetAny isFound fastSet =
+    fastSet
+        |> FastSet.stoppableFoldl
+            (\element _ ->
+                if element |> isFound then
+                    FastDict.Stop True
+
+                else
+                    FastDict.Continue False
+            )
+            False
+
+
+grainLetDeclarationUsedLocalReferences : GrainLetDeclaration -> FastSet.Set String
+grainLetDeclarationUsedLocalReferences grainLetDeclaration =
+    case grainLetDeclaration of
+        GrainLetDestructuring grainLetDestructuring ->
+            grainLetDestructuring.expression
+                |> grainExpressionContainedLocalReferences
+
+        GrainLetDeclarationValueOrFunction grainLetValueOrFunction ->
+            grainLetValueOrFunction.result
+                |> grainExpressionContainedLocalReferences
+
+
+grainPatternContainedVariables : GrainPattern -> FastSet.Set String
+grainPatternContainedVariables grainPattern =
+    -- IGNORE TCO
+    case grainPattern of
+        GrainPatternIgnore ->
+            FastSet.empty
+
+        GrainPatternNumber _ ->
+            FastSet.empty
+
+        GrainPatternChar _ ->
+            FastSet.empty
+
+        GrainPatternString _ ->
+            FastSet.empty
+
+        GrainPatternVariable variable ->
+            FastSet.singleton variable
+
+        GrainPatternAs grainPatternAs ->
+            FastSet.insert grainPatternAs.variable
+                (grainPatternAs.pattern |> grainPatternContainedVariables)
+
+        GrainPatternListExact elementPatterns ->
+            elementPatterns
+                |> listMapToFastSetsAndUnify grainPatternContainedVariables
+
+        GrainPatternTuple partPatterns ->
+            FastSet.union
+                (partPatterns.part0 |> grainPatternContainedVariables)
+                (FastSet.union
+                    (partPatterns.part1 |> grainPatternContainedVariables)
+                    (partPatterns.part2Up
+                        |> listMapToFastSetsAndUnify grainPatternContainedVariables
+                    )
+                )
+
+        GrainPatternListCons patternListCons ->
+            FastSet.union
+                (patternListCons.initialElement0 |> grainPatternContainedVariables)
+                (FastSet.union
+                    (patternListCons.initialElement1Up
+                        |> listMapToFastSetsAndUnify grainPatternContainedVariables
+                    )
+                    (patternListCons.tail |> grainPatternContainedVariables)
+                )
+
+        GrainPatternVariant patternVariant ->
+            patternVariant.values
+                |> listMapToFastSetsAndUnify grainPatternContainedVariables
+
+        GrainPatternRecordInexhaustive recordPatternInexhaustiveFieldNames ->
+            recordPatternInexhaustiveFieldNames
 
 
 printGrainLetDestructuring :
