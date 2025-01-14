@@ -2516,6 +2516,9 @@ referenceToCoreGrain reference =
                 "minimum" ->
                     Just { moduleOrigin = Nothing, name = "list_minimum" }
 
+                "maximum" ->
+                    Just { moduleOrigin = Nothing, name = "list_maximum" }
+
                 "product" ->
                     Just { moduleOrigin = Nothing, name = "list_product" }
 
