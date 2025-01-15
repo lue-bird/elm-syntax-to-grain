@@ -1918,7 +1918,7 @@ pattern moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxPattern) =
                             , introducedVariables =
                                 FastSet.union
                                     part0.introducedVariables
-                                    part0.introducedVariables
+                                    part1.introducedVariables
                             }
                         )
                         (part0Node |> pattern moduleOriginLookup)
@@ -1937,8 +1937,8 @@ pattern moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxPattern) =
                                 FastSet.union
                                     part0.introducedVariables
                                     (FastSet.union
-                                        part0.introducedVariables
                                         part1.introducedVariables
+                                        part2.introducedVariables
                                     )
                             }
                         )
