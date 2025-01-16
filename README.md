@@ -53,7 +53,7 @@ run [this node script](https://github.com/lue-bird/elm-syntax-to-grain/tree/main
 -   not much care has been put into making the resulting code readable or even conventionally formatted
     and comments are not preserved
 
-Please [report any issues](https://github.com/lue-bird/elm-syntax-format/issues/new) you notice <3
+Please [report any issues](https://github.com/lue-bird/elm-syntax-to-grain/issues/new) you notice <3
 
 ### why grain?
 -   it runs fast and has exceptional support for Wasm
