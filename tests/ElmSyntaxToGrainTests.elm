@@ -432,7 +432,7 @@ expectTranspiledToGrainStringAs expected source =
                                 String
                                 { parameters : List ElmSyntaxToGrain.GrainPattern
                                 , result : ElmSyntaxToGrain.GrainExpression
-                                , type_ : Maybe ElmSyntaxToGrain.GrainType
+                                , type_ : ElmSyntaxToGrain.GrainType
                                 }
                         , typeAliases :
                             FastDict.Dict

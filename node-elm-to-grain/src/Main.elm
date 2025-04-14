@@ -171,9 +171,9 @@ runningInterface state =
         [ Node.standardOutWrite (
                 (transpiledDeclarationsAndErrors.errors
                 |> List.filter (\error ->
-                    -- TODO remove filter for production use
-                    error /= "could not find module origin of the type reference Decoder"
-                    && error /= "could not find module origin of the type reference Value"
+                    error /= "could not find imported/local declaration for Decoder"
+                    && error /= "could not find imported/local declaration for Value"
+                    && error /= "could not find imported/local declaration for Interface"
                 )
                 |> String.join "\n")
                 ++ "\n")

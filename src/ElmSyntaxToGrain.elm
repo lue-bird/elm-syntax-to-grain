@@ -17,16 +17,16 @@ If you need more fine-grained helpers,
 import Data.Graph
 import Elm.Syntax.Declaration
 import Elm.Syntax.Exposing
-import Elm.Syntax.Expression
 import Elm.Syntax.File
 import Elm.Syntax.Import
 import Elm.Syntax.Module
 import Elm.Syntax.ModuleName
 import Elm.Syntax.Node
-import Elm.Syntax.Pattern
+import Elm.Syntax.Range
 import Elm.Syntax.Type
 import Elm.Syntax.TypeAlias
 import Elm.Syntax.TypeAnnotation
+import ElmSyntaxTypeInfer
 import FastDict
 import FastSet
 import Print exposing (Print)
@@ -120,19 +120,21 @@ type GrainExpression
         , argument1Up : List GrainExpression
         }
     | GrainExpressionLambda
-        { parameter0 : GrainPattern
-        , parameter1Up : List GrainPattern
+        { parameter0 : { pattern : GrainPattern, type_ : GrainType }
+        , parameter1Up : List { pattern : GrainPattern, type_ : GrainType }
         , result : GrainExpression
         }
     | GrainExpressionMatch
         { matched : GrainExpression
         , case0 :
             { pattern : GrainPattern
+            , patternType : GrainType
             , result : GrainExpression
             }
         , case1Up :
             List
                 { pattern : GrainPattern
+                , patternType : GrainType
                 , result : GrainExpression
                 }
         }
@@ -148,12 +150,13 @@ type GrainExpression
 type GrainLetDeclaration
     = GrainLetDestructuring
         { pattern : GrainPattern
+        , patternType : GrainType
         , expression : GrainExpression
         }
     | GrainLetDeclarationValueOrFunction
         { name : String
         , result : GrainExpression
-        , type_ : Maybe GrainType
+        , type_ : GrainType
         }
 
 
@@ -902,7 +905,7 @@ enumTypeDeclaration moduleOriginLookup syntaxEnumType =
                         (syntaxVariant.arguments
                             |> listMapAndCombineOk
                                 (\value ->
-                                    value |> type_ moduleOriginLookup
+                                    value |> typeAnnotation moduleOriginLookup
                                 )
                         )
                 )
@@ -1028,7 +1031,7 @@ typeAliasDeclaration moduleOriginLookup syntaxTypeAlias =
             }
         )
         (syntaxTypeAlias.typeAnnotation
-            |> type_ moduleOriginLookup
+            |> typeAnnotation moduleOriginLookup
         )
 
 
@@ -1103,10 +1106,164 @@ printGrainRecordTypeDeclaration grainRecordFields =
 
 
 type_ :
+    ElmSyntaxTypeInfer.Type String
+    -> Result String GrainType
+type_ syntaxType =
+    -- IGNORE TCO
+    case syntaxType of
+        ElmSyntaxTypeInfer.TypeVariable variable ->
+            Ok (GrainTypeVariable (variable |> variableNameDisambiguateFromGrainKeywords))
+
+        ElmSyntaxTypeInfer.TypeNotVariable syntaxTypeNotVariable ->
+            case syntaxTypeNotVariable of
+                ElmSyntaxTypeInfer.TypeUnit ->
+                    Ok grainTypeVoid
+
+                ElmSyntaxTypeInfer.TypeConstruct typeConstruct ->
+                    Result.map
+                        (\arguments ->
+                            let
+                                grainReference : { moduleOrigin : Maybe String, name : String }
+                                grainReference =
+                                    case
+                                        { moduleOrigin = typeConstruct.moduleOrigin
+                                        , name = typeConstruct.name
+                                        }
+                                            |> referenceToCoreGrain
+                                    of
+                                        Just coreGrain ->
+                                            coreGrain
+
+                                        Nothing ->
+                                            { moduleOrigin = Nothing
+                                            , name =
+                                                { moduleOrigin = typeConstruct.moduleOrigin
+                                                , name = typeConstruct.name
+                                                }
+                                                    |> referenceToGrainName
+                                                    |> stringFirstCharToUpper
+                                            }
+                            in
+                            GrainTypeConstruct
+                                { moduleOrigin = grainReference.moduleOrigin
+                                , name = grainReference.name
+                                , arguments = arguments
+                                }
+                        )
+                        (typeConstruct.arguments
+                            |> listMapAndCombineOk
+                                (\argument -> argument |> type_)
+                        )
+
+                ElmSyntaxTypeInfer.TypeTuple parts ->
+                    Result.map2
+                        (\part0 part1 ->
+                            GrainTypeTuple
+                                { part0 = part0
+                                , part1 = part1
+                                , part2Up = []
+                                }
+                        )
+                        (parts.part0 |> type_)
+                        (parts.part1 |> type_)
+
+                ElmSyntaxTypeInfer.TypeTriple parts ->
+                    Result.map3
+                        (\part0 part1 part2 ->
+                            GrainTypeTuple
+                                { part0 = part0
+                                , part1 = part1
+                                , part2Up = [ part2 ]
+                                }
+                        )
+                        (parts.part0 |> type_)
+                        (parts.part1 |> type_)
+                        (parts.part2 |> type_)
+
+                ElmSyntaxTypeInfer.TypeRecord recordFields ->
+                    Result.map
+                        (\fields ->
+                            let
+                                fieldAsFastDict : FastDict.Dict String GrainType
+                                fieldAsFastDict =
+                                    FastDict.fromList fields
+                            in
+                            GrainTypeConstruct
+                                { moduleOrigin = Nothing
+                                , name =
+                                    generatedGrainRecordTypeAliasName
+                                        (fieldAsFastDict |> FastDict.keys)
+                                , arguments =
+                                    fieldAsFastDict
+                                        |> FastDict.values
+                                }
+                        )
+                        (recordFields
+                            |> FastDict.toList
+                            |> listMapAndCombineOk
+                                (\( fieldName, fieldValueType ) ->
+                                    Result.map
+                                        (\value ->
+                                            ( fieldName |> variableNameDisambiguateFromGrainKeywords
+                                            , value
+                                            )
+                                        )
+                                        (fieldValueType |> type_)
+                                )
+                        )
+
+                ElmSyntaxTypeInfer.TypeFunction typeFunction ->
+                    Result.map2
+                        (\input0 outputExpandedReverse ->
+                            case outputExpandedReverse of
+                                output :: inputLastTo1 ->
+                                    GrainTypeFunction
+                                        { input = input0 :: (inputLastTo1 |> List.reverse)
+                                        , output = output
+                                        }
+
+                                -- too lazy to make it non-empty
+                                [] ->
+                                    input0
+                        )
+                        (typeFunction.input |> type_)
+                        (typeFunction.output
+                            |> typeExpandFunctionOutputReverse
+                            |> listMapAndCombineOk
+                                (\partOfOutput -> type_ partOfOutput)
+                        )
+
+                ElmSyntaxTypeInfer.TypeRecordExtension _ ->
+                    Err "extensible record types are not supported"
+
+
+typeExpandFunctionOutputReverse :
+    ElmSyntaxTypeInfer.Type String
+    -> List (ElmSyntaxTypeInfer.Type String)
+typeExpandFunctionOutputReverse typeNode =
+    typeExpandFunctionOutputIntoReverse [] typeNode
+
+
+typeExpandFunctionOutputIntoReverse :
+    List (ElmSyntaxTypeInfer.Type String)
+    -> ElmSyntaxTypeInfer.Type String
+    -> List (ElmSyntaxTypeInfer.Type String)
+typeExpandFunctionOutputIntoReverse soFarReverse syntaxType =
+    case syntaxType of
+        ElmSyntaxTypeInfer.TypeNotVariable (ElmSyntaxTypeInfer.TypeFunction typeFunction) ->
+            typeExpandFunctionOutputIntoReverse
+                (typeFunction.input :: soFarReverse)
+                typeFunction.output
+
+        otherType ->
+            otherType :: soFarReverse
+
+
+typeAnnotation :
     ModuleContext
     -> Elm.Syntax.Node.Node Elm.Syntax.TypeAnnotation.TypeAnnotation
     -> Result String GrainType
-type_ moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxType) =
+typeAnnotation moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxType) =
     -- IGNORE TCO
     case syntaxType of
         Elm.Syntax.TypeAnnotation.Unit ->
@@ -1163,7 +1320,7 @@ type_ moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxType) =
                         )
                         (typedArguments
                             |> listMapAndCombineOk
-                                (\argument -> argument |> type_ moduleOriginLookup)
+                                (\argument -> argument |> typeAnnotation moduleOriginLookup)
                         )
 
         Elm.Syntax.TypeAnnotation.Tupled parts ->
@@ -1173,7 +1330,7 @@ type_ moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxType) =
                     Ok grainTypeVoid
 
                 [ inParens ] ->
-                    type_ moduleOriginLookup inParens
+                    typeAnnotation moduleOriginLookup inParens
 
                 [ tuplePart0, tuplePart1 ] ->
                     Result.map2
@@ -1184,8 +1341,8 @@ type_ moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxType) =
                                 , part2Up = []
                                 }
                         )
-                        (tuplePart0 |> type_ moduleOriginLookup)
-                        (tuplePart1 |> type_ moduleOriginLookup)
+                        (tuplePart0 |> typeAnnotation moduleOriginLookup)
+                        (tuplePart1 |> typeAnnotation moduleOriginLookup)
 
                 [ tuplePart0, tuplePart1, tuplePart2 ] ->
                     Result.map3
@@ -1196,9 +1353,9 @@ type_ moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxType) =
                                 , part2Up = [ part2 ]
                                 }
                         )
-                        (tuplePart0 |> type_ moduleOriginLookup)
-                        (tuplePart1 |> type_ moduleOriginLookup)
-                        (tuplePart2 |> type_ moduleOriginLookup)
+                        (tuplePart0 |> typeAnnotation moduleOriginLookup)
+                        (tuplePart1 |> typeAnnotation moduleOriginLookup)
+                        (tuplePart2 |> typeAnnotation moduleOriginLookup)
 
                 _ :: _ :: _ :: _ :: _ ->
                     Err "too many tuple parts"
@@ -1230,7 +1387,7 @@ type_ moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxType) =
                                     , value
                                     )
                                 )
-                                (valueNode |> type_ moduleOriginLookup)
+                                (valueNode |> typeAnnotation moduleOriginLookup)
                         )
                 )
 
@@ -1248,12 +1405,12 @@ type_ moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxType) =
                         [] ->
                             input0
                 )
-                (inputNode |> type_ moduleOriginLookup)
+                (inputNode |> typeAnnotation moduleOriginLookup)
                 (outputNode
-                    |> typeExpandFunctionOutputReverse
+                    |> typeAnnotationExpandFunctionOutputReverse
                     |> listMapAndCombineOk
                         (\partOfOutput ->
-                            type_ moduleOriginLookup partOfOutput
+                            typeAnnotation moduleOriginLookup partOfOutput
                         )
                 )
 
@@ -1261,21 +1418,21 @@ type_ moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxType) =
             Err "extensible record types are not supported"
 
 
-typeExpandFunctionOutputReverse :
+typeAnnotationExpandFunctionOutputReverse :
     Elm.Syntax.Node.Node Elm.Syntax.TypeAnnotation.TypeAnnotation
     -> List (Elm.Syntax.Node.Node Elm.Syntax.TypeAnnotation.TypeAnnotation)
-typeExpandFunctionOutputReverse typeNode =
-    typeExpandFunctionOutputIntoReverse [] typeNode
+typeAnnotationExpandFunctionOutputReverse typeNode =
+    typeAnnotationExpandFunctionOutputIntoReverse [] typeNode
 
 
-typeExpandFunctionOutputIntoReverse :
+typeAnnotationExpandFunctionOutputIntoReverse :
     List (Elm.Syntax.Node.Node Elm.Syntax.TypeAnnotation.TypeAnnotation)
     -> Elm.Syntax.Node.Node Elm.Syntax.TypeAnnotation.TypeAnnotation
     -> List (Elm.Syntax.Node.Node Elm.Syntax.TypeAnnotation.TypeAnnotation)
-typeExpandFunctionOutputIntoReverse soFarReverse (Elm.Syntax.Node.Node fullRange syntaxType) =
+typeAnnotationExpandFunctionOutputIntoReverse soFarReverse (Elm.Syntax.Node.Node fullRange syntaxType) =
     case syntaxType of
         Elm.Syntax.TypeAnnotation.FunctionTypeAnnotation inputNode outputNode ->
-            typeExpandFunctionOutputIntoReverse
+            typeAnnotationExpandFunctionOutputIntoReverse
                 (inputNode :: soFarReverse)
                 outputNode
 
@@ -1827,57 +1984,49 @@ charIsLatinAlphaNumOrUnderscoreFast c =
 
 
 pattern :
-    ModuleContext
-    -> Elm.Syntax.Node.Node Elm.Syntax.Pattern.Pattern
+    ElmSyntaxTypeInfer.TypedNode
+        (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String))
+        (ElmSyntaxTypeInfer.Type String)
     ->
         Result
             String
             { pattern : GrainPattern
             , introducedVariables : FastSet.Set String
             }
-pattern moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxPattern) =
+pattern syntaxPattern =
     -- IGNORE TCO
-    case syntaxPattern of
-        Elm.Syntax.Pattern.AllPattern ->
+    case syntaxPattern.value of
+        ElmSyntaxTypeInfer.PatternIgnored ->
             Ok
                 { pattern = GrainPatternIgnore
                 , introducedVariables = FastSet.empty
                 }
 
-        Elm.Syntax.Pattern.UnitPattern ->
+        ElmSyntaxTypeInfer.PatternUnit ->
             Ok
                 { pattern = GrainPatternIgnore
                 , introducedVariables = FastSet.empty
                 }
 
-        Elm.Syntax.Pattern.CharPattern charValue ->
+        ElmSyntaxTypeInfer.PatternChar charValue ->
             Ok
                 { pattern = GrainPatternChar charValue
                 , introducedVariables = FastSet.empty
                 }
 
-        Elm.Syntax.Pattern.StringPattern stringValue ->
+        ElmSyntaxTypeInfer.PatternString stringValue ->
             Ok
                 { pattern = GrainPatternString stringValue
                 , introducedVariables = FastSet.empty
                 }
 
-        Elm.Syntax.Pattern.IntPattern intValue ->
+        ElmSyntaxTypeInfer.PatternInt intValue ->
             Ok
-                { pattern = GrainPatternNumber (intValue |> Basics.toFloat)
+                { pattern = GrainPatternNumber (intValue.value |> Basics.toFloat)
                 , introducedVariables = FastSet.empty
                 }
 
-        Elm.Syntax.Pattern.HexPattern intValue ->
-            Ok
-                { pattern = GrainPatternNumber (intValue |> Basics.toFloat)
-                , introducedVariables = FastSet.empty
-                }
-
-        Elm.Syntax.Pattern.FloatPattern _ ->
-            Err "float pattern is invalid syntax"
-
-        Elm.Syntax.Pattern.VarPattern variableName ->
+        ElmSyntaxTypeInfer.PatternVariable variableName ->
             let
                 disambiguatedVariableName : String
                 disambiguatedVariableName =
@@ -1890,74 +2039,57 @@ pattern moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxPattern) =
                     FastSet.singleton disambiguatedVariableName
                 }
 
-        Elm.Syntax.Pattern.ParenthesizedPattern inParens ->
-            pattern moduleOriginLookup inParens
+        ElmSyntaxTypeInfer.PatternParenthesized inParens ->
+            pattern inParens
 
-        Elm.Syntax.Pattern.TuplePattern parts ->
-            case parts of
-                [] ->
-                    -- should be covered by UnitPattern
-                    Ok
-                        { pattern = GrainPatternIgnore
-                        , introducedVariables = FastSet.empty
-                        }
-
-                [ inParens ] ->
-                    -- should be covered by ParenthesizedPattern
-                    pattern moduleOriginLookup inParens
-
-                [ part0Node, part1Node ] ->
-                    Result.map2
-                        (\part0 part1 ->
-                            { pattern =
-                                GrainPatternTuple
-                                    { part0 = part0.pattern
-                                    , part1 = part1.pattern
-                                    , part2Up = []
-                                    }
-                            , introducedVariables =
-                                FastSet.union
-                                    part0.introducedVariables
-                                    part1.introducedVariables
+        ElmSyntaxTypeInfer.PatternTuple parts ->
+            Result.map2
+                (\part0 part1 ->
+                    { pattern =
+                        GrainPatternTuple
+                            { part0 = part0.pattern
+                            , part1 = part1.pattern
+                            , part2Up = []
                             }
-                        )
-                        (part0Node |> pattern moduleOriginLookup)
-                        (part1Node |> pattern moduleOriginLookup)
+                    , introducedVariables =
+                        FastSet.union
+                            part0.introducedVariables
+                            part1.introducedVariables
+                    }
+                )
+                (parts.part0 |> pattern)
+                (parts.part1 |> pattern)
 
-                [ part0Node, part1Node, part2Node ] ->
-                    Result.map3
-                        (\part0 part1 part2 ->
-                            { pattern =
-                                GrainPatternTuple
-                                    { part0 = part0.pattern
-                                    , part1 = part1.pattern
-                                    , part2Up = [ part2.pattern ]
-                                    }
-                            , introducedVariables =
-                                FastSet.union
-                                    part0.introducedVariables
-                                    (FastSet.union
-                                        part1.introducedVariables
-                                        part2.introducedVariables
-                                    )
+        ElmSyntaxTypeInfer.PatternTriple parts ->
+            Result.map3
+                (\part0 part1 part2 ->
+                    { pattern =
+                        GrainPatternTuple
+                            { part0 = part0.pattern
+                            , part1 = part1.pattern
+                            , part2Up = [ part2.pattern ]
                             }
-                        )
-                        (part0Node |> pattern moduleOriginLookup)
-                        (part1Node |> pattern moduleOriginLookup)
-                        (part2Node |> pattern moduleOriginLookup)
+                    , introducedVariables =
+                        FastSet.union
+                            part0.introducedVariables
+                            (FastSet.union
+                                part1.introducedVariables
+                                part2.introducedVariables
+                            )
+                    }
+                )
+                (parts.part0 |> pattern)
+                (parts.part1 |> pattern)
+                (parts.part2 |> pattern)
 
-                _ :: _ :: _ :: _ :: _ ->
-                    -- invalid syntax
-                    Err "too many tuple parts"
-
-        Elm.Syntax.Pattern.RecordPattern fields ->
+        ElmSyntaxTypeInfer.PatternRecord fields ->
             let
                 fieldNames : FastSet.Set String
                 fieldNames =
                     fields
                         |> listMapAndToFastSet
-                            (\(Elm.Syntax.Node.Node _ fieldName) ->
-                                fieldName |> variableNameDisambiguateFromGrainKeywords
+                            (\fieldTypedNode ->
+                                fieldTypedNode.value |> variableNameDisambiguateFromGrainKeywords
                             )
             in
             Ok
@@ -1965,14 +2097,15 @@ pattern moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxPattern) =
                 , introducedVariables = fieldNames
                 }
 
-        Elm.Syntax.Pattern.UnConsPattern headPatternNode tailPatternNode ->
+        ElmSyntaxTypeInfer.PatternListCons listCons ->
             let
                 tailExpanded :
-                    { initialElements : List (Elm.Syntax.Node.Node Elm.Syntax.Pattern.Pattern)
-                    , tail : Elm.Syntax.Node.Node Elm.Syntax.Pattern.Pattern
+                    { initialElements :
+                        List (ElmSyntaxTypeInfer.TypedNode (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String)) (ElmSyntaxTypeInfer.Type String))
+                    , tail : ElmSyntaxTypeInfer.TypedNode (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String)) (ElmSyntaxTypeInfer.Type String)
                     }
                 tailExpanded =
-                    tailPatternNode |> patternConsExpand
+                    listCons.tail |> patternConsExpand
             in
             resultAndThen3
                 (\initialElement0 initialElement1Up tailGrainPattern ->
@@ -1998,14 +2131,14 @@ pattern moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxPattern) =
                         , introducedVariables = introducedVariables
                         }
                 )
-                (headPatternNode |> pattern moduleOriginLookup)
+                (listCons.head |> pattern)
                 (tailExpanded.initialElements
                     |> listMapAndCombineOk
-                        (\initialElement -> initialElement |> pattern moduleOriginLookup)
+                        (\initialElement -> initialElement |> pattern)
                 )
-                (tailExpanded.tail |> pattern moduleOriginLookup)
+                (tailExpanded.tail |> pattern)
 
-        Elm.Syntax.Pattern.ListPattern elementPatterns ->
+        ElmSyntaxTypeInfer.PatternListExact elementPatterns ->
             Result.map
                 (\elements ->
                     { pattern =
@@ -2017,12 +2150,29 @@ pattern moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxPattern) =
                 )
                 (elementPatterns
                     |> listMapAndCombineOk
-                        (\element -> element |> pattern moduleOriginLookup)
+                        (\element -> element |> pattern)
                 )
 
-        Elm.Syntax.Pattern.NamedPattern syntaxQualifiedNameRef argumentPatterns ->
-            Result.map2
-                (\values reference ->
+        ElmSyntaxTypeInfer.PatternVariant variant ->
+            Result.map
+                (\values ->
+                    let
+                        reference : { moduleOrigin : Maybe String, name : String }
+                        reference =
+                            case { moduleOrigin = variant.moduleOrigin, name = variant.name } |> referenceToCoreGrain of
+                                Just grainReference ->
+                                    grainReference
+
+                                Nothing ->
+                                    { moduleOrigin = Nothing
+                                    , name =
+                                        referenceToGrainName
+                                            { moduleOrigin = variant.moduleOrigin
+                                            , name = variant.name
+                                            }
+                                            |> stringFirstCharToUpper
+                                    }
+                    in
                     { pattern =
                         GrainPatternVariant
                             { moduleOrigin = reference.moduleOrigin
@@ -2034,45 +2184,18 @@ pattern moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxPattern) =
                             |> listMapToFastSetsAndUnify .introducedVariables
                     }
                 )
-                (argumentPatterns
+                (variant.values
                     |> listMapAndCombineOk
-                        (\argument -> argument |> pattern moduleOriginLookup)
-                )
-                (case moduleOriginLookup.variantLookup |> FastDict.get ( syntaxQualifiedNameRef.moduleName, syntaxQualifiedNameRef.name ) of
-                    Nothing ->
-                        Err
-                            ("could not find origin choice type for the variant "
-                                ++ qualifiedToString
-                                    { qualification = syntaxQualifiedNameRef.moduleName
-                                    , name = syntaxQualifiedNameRef.name
-                                    }
-                            )
-
-                    Just variantInfo ->
-                        Ok
-                            (case { moduleOrigin = variantInfo.moduleOrigin, name = syntaxQualifiedNameRef.name } |> referenceToCoreGrain of
-                                Just grainReference ->
-                                    grainReference
-
-                                Nothing ->
-                                    { moduleOrigin = Nothing
-                                    , name =
-                                        referenceToGrainName
-                                            { moduleOrigin = variantInfo.moduleOrigin
-                                            , name = syntaxQualifiedNameRef.name
-                                            }
-                                            |> stringFirstCharToUpper
-                                    }
-                            )
+                        (\argument -> argument |> pattern)
                 )
 
-        Elm.Syntax.Pattern.AsPattern aliasedPatternNode (Elm.Syntax.Node.Node _ variable) ->
+        ElmSyntaxTypeInfer.PatternAs patternAs ->
             Result.map
                 (\aliasedPattern ->
                     let
                         variableDisambiguated : String
                         variableDisambiguated =
-                            variable |> variableNameDisambiguateFromGrainKeywords
+                            patternAs.variable.value |> variableNameDisambiguateFromGrainKeywords
                     in
                     { pattern =
                         GrainPatternAs
@@ -2084,7 +2207,30 @@ pattern moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxPattern) =
                             |> FastSet.insert variableDisambiguated
                     }
                 )
-                (aliasedPatternNode |> pattern moduleOriginLookup)
+                (patternAs.pattern |> pattern)
+
+
+typedPattern :
+    ElmSyntaxTypeInfer.TypedNode
+        (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String))
+        (ElmSyntaxTypeInfer.Type String)
+    ->
+        Result
+            String
+            { pattern : GrainPattern
+            , type_ : GrainType
+            , introducedVariables : FastSet.Set String
+            }
+typedPattern patternTypedNode =
+    Result.map2
+        (\grainPattern grainType ->
+            { pattern = grainPattern.pattern
+            , type_ = grainType
+            , introducedVariables = grainPattern.introducedVariables
+            }
+        )
+        (patternTypedNode |> pattern)
+        (patternTypedNode.type_ |> type_)
 
 
 printGrainPatternListCons :
@@ -2113,123 +2259,123 @@ printGrainPatternListCons syntaxCons =
 
 
 patternConsExpand :
-    Elm.Syntax.Node.Node Elm.Syntax.Pattern.Pattern
+    ElmSyntaxTypeInfer.TypedNode
+        (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String))
+        (ElmSyntaxTypeInfer.Type String)
     ->
-        { initialElements : List (Elm.Syntax.Node.Node Elm.Syntax.Pattern.Pattern)
-        , tail : Elm.Syntax.Node.Node Elm.Syntax.Pattern.Pattern
+        { initialElements :
+            List
+                (ElmSyntaxTypeInfer.TypedNode
+                    (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String))
+                    (ElmSyntaxTypeInfer.Type String)
+                )
+        , tail :
+            ElmSyntaxTypeInfer.TypedNode
+                (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String))
+                (ElmSyntaxTypeInfer.Type String)
         }
 patternConsExpand patternNode =
     patternConsExpandFromInitialElementsReverse [] patternNode
 
 
 patternConsExpandFromInitialElementsReverse :
-    List (Elm.Syntax.Node.Node Elm.Syntax.Pattern.Pattern)
-    -> Elm.Syntax.Node.Node Elm.Syntax.Pattern.Pattern
+    List
+        (ElmSyntaxTypeInfer.TypedNode
+            (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String))
+            (ElmSyntaxTypeInfer.Type String)
+        )
     ->
-        { initialElements : List (Elm.Syntax.Node.Node Elm.Syntax.Pattern.Pattern)
-        , tail : Elm.Syntax.Node.Node Elm.Syntax.Pattern.Pattern
+        ElmSyntaxTypeInfer.TypedNode
+            (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String))
+            (ElmSyntaxTypeInfer.Type String)
+    ->
+        { initialElements :
+            List
+                (ElmSyntaxTypeInfer.TypedNode
+                    (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String))
+                    (ElmSyntaxTypeInfer.Type String)
+                )
+        , tail :
+            ElmSyntaxTypeInfer.TypedNode
+                (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String))
+                (ElmSyntaxTypeInfer.Type String)
         }
-patternConsExpandFromInitialElementsReverse initialElementsSoFarReverse (Elm.Syntax.Node.Node fulRange syntaxPattern) =
-    case syntaxPattern of
-        Elm.Syntax.Pattern.UnConsPattern headPattern tailPattern ->
+patternConsExpandFromInitialElementsReverse initialElementsSoFarReverse syntaxPattern =
+    let
+        wrapInTypedNode value =
+            { value = value
+            , type_ = syntaxPattern.type_
+            , range = syntaxPattern.range
+            }
+    in
+    case syntaxPattern.value of
+        ElmSyntaxTypeInfer.PatternListCons listCons ->
             patternConsExpandFromInitialElementsReverse
-                (headPattern :: initialElementsSoFarReverse)
-                tailPattern
+                (listCons.head :: initialElementsSoFarReverse)
+                listCons.tail
 
-        Elm.Syntax.Pattern.ParenthesizedPattern inParens ->
+        ElmSyntaxTypeInfer.PatternParenthesized inParens ->
             patternConsExpandFromInitialElementsReverse initialElementsSoFarReverse
                 inParens
 
-        Elm.Syntax.Pattern.AllPattern ->
+        ElmSyntaxTypeInfer.PatternIgnored ->
             { initialElements = initialElementsSoFarReverse |> List.reverse
-            , tail = Elm.Syntax.Node.Node fulRange Elm.Syntax.Pattern.AllPattern
+            , tail = ElmSyntaxTypeInfer.PatternIgnored |> wrapInTypedNode
             }
 
-        Elm.Syntax.Pattern.UnitPattern ->
+        ElmSyntaxTypeInfer.PatternUnit ->
             { initialElements = initialElementsSoFarReverse |> List.reverse
-            , tail = Elm.Syntax.Node.Node fulRange Elm.Syntax.Pattern.UnitPattern
+            , tail = ElmSyntaxTypeInfer.PatternUnit |> wrapInTypedNode
             }
 
-        Elm.Syntax.Pattern.CharPattern char ->
+        ElmSyntaxTypeInfer.PatternChar char ->
             { initialElements = initialElementsSoFarReverse |> List.reverse
-            , tail = Elm.Syntax.Node.Node fulRange (Elm.Syntax.Pattern.CharPattern char)
+            , tail = ElmSyntaxTypeInfer.PatternChar char |> wrapInTypedNode
             }
 
-        Elm.Syntax.Pattern.StringPattern string ->
+        ElmSyntaxTypeInfer.PatternString string ->
             { initialElements = initialElementsSoFarReverse |> List.reverse
-            , tail = Elm.Syntax.Node.Node fulRange (Elm.Syntax.Pattern.StringPattern string)
+            , tail = ElmSyntaxTypeInfer.PatternString string |> wrapInTypedNode
             }
 
-        Elm.Syntax.Pattern.IntPattern int ->
+        ElmSyntaxTypeInfer.PatternInt int ->
             { initialElements = initialElementsSoFarReverse |> List.reverse
-            , tail = Elm.Syntax.Node.Node fulRange (Elm.Syntax.Pattern.IntPattern int)
+            , tail = ElmSyntaxTypeInfer.PatternInt int |> wrapInTypedNode
             }
 
-        Elm.Syntax.Pattern.HexPattern int ->
+        ElmSyntaxTypeInfer.PatternTuple parts ->
             { initialElements = initialElementsSoFarReverse |> List.reverse
-            , tail = Elm.Syntax.Node.Node fulRange (Elm.Syntax.Pattern.HexPattern int)
+            , tail = ElmSyntaxTypeInfer.PatternTuple parts |> wrapInTypedNode
             }
 
-        Elm.Syntax.Pattern.FloatPattern float ->
+        ElmSyntaxTypeInfer.PatternTriple parts ->
             { initialElements = initialElementsSoFarReverse |> List.reverse
-            , tail = Elm.Syntax.Node.Node fulRange (Elm.Syntax.Pattern.FloatPattern float)
+            , tail = ElmSyntaxTypeInfer.PatternTriple parts |> wrapInTypedNode
             }
 
-        Elm.Syntax.Pattern.TuplePattern parts ->
-            case parts of
-                [ part0, part1 ] ->
-                    { initialElements = initialElementsSoFarReverse |> List.reverse
-                    , tail = Elm.Syntax.Node.Node fulRange (Elm.Syntax.Pattern.TuplePattern [ part0, part1 ])
-                    }
-
-                [ part0, part1, part2 ] ->
-                    { initialElements = initialElementsSoFarReverse |> List.reverse
-                    , tail = Elm.Syntax.Node.Node fulRange (Elm.Syntax.Pattern.TuplePattern [ part0, part1, part2 ])
-                    }
-
-                [] ->
-                    -- should be handled by UnitPattern
-                    { initialElements = initialElementsSoFarReverse |> List.reverse
-                    , tail = Elm.Syntax.Node.Node fulRange Elm.Syntax.Pattern.UnitPattern
-                    }
-
-                [ inParens ] ->
-                    -- should be handled by ParenthesizedPattern
-                    { initialElements = initialElementsSoFarReverse |> List.reverse
-                    , tail = Elm.Syntax.Node.Node fulRange (Elm.Syntax.Pattern.TuplePattern [ inParens ])
-                    }
-
-                part0 :: part1 :: part2 :: part3 :: part4Up ->
-                    -- should be handled by ParenthesizedPattern
-                    { initialElements = initialElementsSoFarReverse |> List.reverse
-                    , tail =
-                        Elm.Syntax.Node.Node fulRange
-                            (Elm.Syntax.Pattern.TuplePattern (part0 :: part1 :: part2 :: part3 :: part4Up))
-                    }
-
-        Elm.Syntax.Pattern.RecordPattern fields ->
+        ElmSyntaxTypeInfer.PatternRecord fields ->
             { initialElements = initialElementsSoFarReverse |> List.reverse
-            , tail = Elm.Syntax.Node.Node fulRange (Elm.Syntax.Pattern.RecordPattern fields)
+            , tail = ElmSyntaxTypeInfer.PatternRecord fields |> wrapInTypedNode
             }
 
-        Elm.Syntax.Pattern.ListPattern elements ->
+        ElmSyntaxTypeInfer.PatternListExact elements ->
             { initialElements = initialElementsSoFarReverse |> List.reverse
-            , tail = Elm.Syntax.Node.Node fulRange (Elm.Syntax.Pattern.ListPattern elements)
+            , tail = ElmSyntaxTypeInfer.PatternListExact elements |> wrapInTypedNode
             }
 
-        Elm.Syntax.Pattern.VarPattern variableName ->
+        ElmSyntaxTypeInfer.PatternVariable variableName ->
             { initialElements = initialElementsSoFarReverse |> List.reverse
-            , tail = Elm.Syntax.Node.Node fulRange (Elm.Syntax.Pattern.VarPattern variableName)
+            , tail = ElmSyntaxTypeInfer.PatternVariable variableName |> wrapInTypedNode
             }
 
-        Elm.Syntax.Pattern.NamedPattern reference parameters ->
+        ElmSyntaxTypeInfer.PatternVariant variant ->
             { initialElements = initialElementsSoFarReverse |> List.reverse
-            , tail = Elm.Syntax.Node.Node fulRange (Elm.Syntax.Pattern.NamedPattern reference parameters)
+            , tail = ElmSyntaxTypeInfer.PatternVariant variant |> wrapInTypedNode
             }
 
-        Elm.Syntax.Pattern.AsPattern aliasedPattern aliasName ->
+        ElmSyntaxTypeInfer.PatternAs patternAs ->
             { initialElements = initialElementsSoFarReverse |> List.reverse
-            , tail = Elm.Syntax.Node.Node fulRange (Elm.Syntax.Pattern.AsPattern aliasedPattern aliasName)
+            , tail = ElmSyntaxTypeInfer.PatternAs patternAs |> wrapInTypedNode
             }
 
 
@@ -2851,7 +2997,7 @@ modules :
                     String
                     { parameters : List GrainPattern
                     , result : GrainExpression
-                    , type_ : Maybe GrainType
+                    , type_ : GrainType
                     }
             , typeAliases :
                 FastDict.Dict
@@ -3362,161 +3508,294 @@ modules syntaxDeclarationsIncludingOverwrittenOnes =
                     )
                     FastDict.empty
 
-        grainDeclarationsWithoutExtraRecordTypeAliases :
-            { errors : List String
-            , declarations :
-                { valuesAndFunctions :
-                    FastDict.Dict
-                        String
-                        { parameters : List GrainPattern
-                        , result : GrainExpression
-                        , type_ : Maybe GrainType
-                        }
-                , typeAliases :
-                    FastDict.Dict
-                        String
-                        { parameters : List String
-                        , type_ : GrainType
-                        }
-                , enumTypes :
-                    FastDict.Dict
-                        String
-                        { parameters : List String
-                        , variants : FastDict.Dict String (List GrainType)
-                        }
-                }
-            }
-        grainDeclarationsWithoutExtraRecordTypeAliases =
+        syntaxModulesFromMostToLeastImported : List Elm.Syntax.File.File
+        syntaxModulesFromMostToLeastImported =
             syntaxModules
-                |> List.foldr
-                    (\syntaxModule soFarAcrossModules ->
+                |> List.map
+                    (\syntaxModule ->
+                        ( syntaxModule
+                        , syntaxModule.moduleDefinition
+                            |> Elm.Syntax.Node.value
+                            |> moduleHeaderName
+                        , syntaxModule.imports
+                            |> List.map
+                                (\(Elm.Syntax.Node.Node _ import_) ->
+                                    import_.moduleName |> Elm.Syntax.Node.value
+                                )
+                        )
+                    )
+                |> Data.Graph.stronglyConnComp
+                |> -- we assume the given module do not have cyclic imports
+                   Data.Graph.flattenSCCs
+
+        syntaxModuleTypes :
+            { errors : List String
+            , types : FastDict.Dict Elm.Syntax.ModuleName.ModuleName ElmSyntaxTypeInfer.ModuleTypes
+            }
+        syntaxModuleTypes =
+            syntaxModulesFromMostToLeastImported
+                |> List.foldl
+                    (\syntaxModule soFar ->
+                        let
+                            declarationTypesAndErrors : { types : ElmSyntaxTypeInfer.ModuleTypes, errors : List String }
+                            declarationTypesAndErrors =
+                                syntaxModule.declarations
+                                    |> List.map Elm.Syntax.Node.value
+                                    |> ElmSyntaxTypeInfer.moduleDeclarationsToTypes
+                                        (syntaxModule.imports
+                                            |> ElmSyntaxTypeInfer.importsToModuleOriginLookup
+                                                soFar.types
+                                        )
+                        in
+                        { errors = declarationTypesAndErrors.errors ++ soFar.errors
+                        , types =
+                            soFar.types
+                                |> FastDict.insert
+                                    (syntaxModule.moduleDefinition
+                                        |> Elm.Syntax.Node.value
+                                        |> moduleHeaderName
+                                    )
+                                    declarationTypesAndErrors.types
+                        }
+                    )
+                    { errors = [], types = ElmSyntaxTypeInfer.elmCoreTypes }
+
+        syntaxModulesInferred :
+            Result
+                String
+                (List
+                    { module_ : Elm.Syntax.File.File
+                    , declarationsInferred :
+                        FastDict.Dict
+                            String
+                            { nameRange : Elm.Syntax.Range.Range
+                            , documentation : Maybe { content : String, range : Elm.Syntax.Range.Range }
+                            , signature : Maybe { range : Elm.Syntax.Range.Range, nameRange : Elm.Syntax.Range.Range, annotationType : Elm.Syntax.TypeAnnotation.TypeAnnotation, annotationTypeRange : Elm.Syntax.Range.Range }
+                            , parameters : List (ElmSyntaxTypeInfer.TypedNode (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String)) (ElmSyntaxTypeInfer.Type String))
+                            , result : ElmSyntaxTypeInfer.TypedNode (ElmSyntaxTypeInfer.Expression (ElmSyntaxTypeInfer.Type String)) (ElmSyntaxTypeInfer.Type String)
+                            , type_ : ElmSyntaxTypeInfer.Type String
+                            }
+                    }
+                )
+        syntaxModulesInferred =
+            syntaxModules
+                |> listMapAndCombineOk
+                    (\syntaxModule ->
                         let
                             moduleName : Elm.Syntax.ModuleName.ModuleName
                             moduleName =
                                 syntaxModule.moduleDefinition
                                     |> Elm.Syntax.Node.value
                                     |> moduleHeaderName
-
-                            createdModuleContext : ModuleContext
-                            createdModuleContext =
-                                moduleContextMerge
-                                    (syntaxModule.imports |> importsToModuleContext moduleMembers)
-                                    (case moduleMembers |> FastDict.get moduleName of
-                                        Nothing ->
-                                            { valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup =
-                                                FastDict.empty
-                                            , variantLookup = FastDict.empty
-                                            }
-
-                                        Just moduleLocalNames ->
-                                            { valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup =
-                                                FastSet.union
-                                                    moduleLocalNames.valueOrFunctionOrTypeAliasNames
-                                                    (moduleLocalNames.enumTypesExposingVariants
-                                                        |> FastDict.foldl
-                                                            (\enumTypeName _ soFar ->
-                                                                soFar |> FastSet.insert enumTypeName
-                                                            )
-                                                            FastSet.empty
-                                                    )
-                                                    |> FastSet.foldl
-                                                        (\name soFar ->
-                                                            soFar
-                                                                |> FastDict.insert ( [], name )
-                                                                    moduleName
-                                                        )
-                                                        FastDict.empty
-                                            , variantLookup =
-                                                moduleLocalNames.enumTypesExposingVariants
-                                                    |> FastDict.foldl
-                                                        (\_ variantNames soFarAcrossEnumTypes ->
-                                                            variantNames
-                                                                |> FastDict.foldl
-                                                                    (\name info soFar ->
-                                                                        soFar
-                                                                            |> FastDict.insert ( [], name )
-                                                                                { moduleOrigin = moduleName
-                                                                                , valueCount = info.valueCount
-                                                                                }
-                                                                    )
-                                                                    soFarAcrossEnumTypes
-                                                        )
-                                                        FastDict.empty
-                                            }
-                                    )
                         in
-                        syntaxModule.declarations
-                            |> List.foldr
-                                (\(Elm.Syntax.Node.Node _ declaration) soFar ->
-                                    case declaration of
-                                        Elm.Syntax.Declaration.FunctionDeclaration syntaxValueOrFunctionDeclaration ->
-                                            case syntaxValueOrFunctionDeclaration |> valueOrFunctionDeclaration createdModuleContext of
-                                                Ok grainValueOrFunctionDeclaration ->
-                                                    { errors = soFar.errors
-                                                    , declarations =
-                                                        { typeAliases = soFar.declarations.typeAliases
-                                                        , enumTypes = soFar.declarations.enumTypes
-                                                        , valuesAndFunctions =
-                                                            soFar.declarations.valuesAndFunctions
-                                                                |> FastDict.insert
-                                                                    ({ moduleOrigin = moduleName
-                                                                     , name = grainValueOrFunctionDeclaration.name
-                                                                     }
-                                                                        |> referenceToGrainName
-                                                                    )
-                                                                    { parameters = grainValueOrFunctionDeclaration.parameters
-                                                                    , result = grainValueOrFunctionDeclaration.result
-                                                                    , type_ = grainValueOrFunctionDeclaration.type_
-                                                                    }
-                                                        }
-                                                    }
+                        case syntaxModuleTypes.types |> FastDict.get moduleName of
+                            Nothing ->
+                                Err "module types did not contain info about the module name"
 
-                                                Err error ->
-                                                    { declarations = soFar.declarations
-                                                    , errors = error :: soFar.errors
-                                                    }
+                            Just otherModuleDeclaredTypes ->
+                                syntaxModule.declarations
+                                    |> List.filterMap
+                                        (\(Elm.Syntax.Node.Node _ declaration) ->
+                                            case declaration of
+                                                Elm.Syntax.Declaration.FunctionDeclaration syntaxValueOrFunctionDeclaration ->
+                                                    -- this is pretty shaky but works for now
+                                                    let
+                                                        name : String
+                                                        name =
+                                                            syntaxValueOrFunctionDeclaration.declaration
+                                                                |> Elm.Syntax.Node.value
+                                                                |> .name
+                                                                |> Elm.Syntax.Node.value
+                                                    in
+                                                    if
+                                                        (name |> String.contains "encode")
+                                                            || (name |> String.contains "fromList")
+                                                            || (name
+                                                                    |> String.toLower
+                                                                    |> String.contains "decode"
+                                                               )
+                                                    then
+                                                        Nothing
 
-                                        Elm.Syntax.Declaration.AliasDeclaration syntaxTypeAliasDeclaration ->
-                                            case syntaxTypeAliasDeclaration |> typeAliasDeclaration createdModuleContext of
-                                                Ok grainTypeAliasDeclaration ->
-                                                    { errors = soFar.errors
-                                                    , declarations =
-                                                        { valuesAndFunctions = soFar.declarations.valuesAndFunctions
-                                                        , enumTypes = soFar.declarations.enumTypes
-                                                        , typeAliases =
-                                                            soFar.declarations.typeAliases
-                                                                |> FastDict.insert
-                                                                    ({ moduleOrigin = moduleName
-                                                                     , name = grainTypeAliasDeclaration.name
-                                                                     }
-                                                                        |> referenceToGrainName
-                                                                        |> stringFirstCharToUpper
-                                                                    )
-                                                                    { parameters = grainTypeAliasDeclaration.parameters
-                                                                    , type_ = grainTypeAliasDeclaration.type_
-                                                                    }
-                                                        }
-                                                    }
-
-                                                Err error ->
-                                                    { declarations = soFar.declarations
-                                                    , errors = error :: soFar.errors
-                                                    }
-
-                                        Elm.Syntax.Declaration.CustomTypeDeclaration syntaxEnumTypeDeclaration ->
-                                            case syntaxEnumTypeDeclaration.name |> Elm.Syntax.Node.value of
-                                                "Maybe" ->
-                                                    soFar
+                                                    else
+                                                        Just syntaxValueOrFunctionDeclaration
 
                                                 _ ->
-                                                    case syntaxEnumTypeDeclaration |> enumTypeDeclaration createdModuleContext of
+                                                    Nothing
+                                        )
+                                    |> ElmSyntaxTypeInfer.valueAndFunctionDeclarations
+                                        { importedTypes =
+                                            syntaxModuleTypes.types
+                                                |> FastDict.remove moduleName
+                                        , moduleOriginLookup =
+                                            syntaxModule.imports
+                                                |> ElmSyntaxTypeInfer.importsToModuleOriginLookup
+                                                    syntaxModuleTypes.types
+                                        , otherModuleDeclaredTypes =
+                                            { signatures = FastDict.empty
+                                            , typeAliases = otherModuleDeclaredTypes.typeAliases
+                                            , choiceTypes = otherModuleDeclaredTypes.choiceTypes
+                                            }
+                                        }
+                                    |> Result.map
+                                        (\declarationsInferred ->
+                                            { declarationsInferred = declarationsInferred
+                                            , module_ = syntaxModule
+                                            }
+                                        )
+                    )
+    in
+    case syntaxModulesInferred of
+        Err error ->
+            { errors = error :: syntaxModuleTypes.errors
+            , declarations =
+                { valuesAndFunctions = FastDict.empty
+                , typeAliases = FastDict.empty
+                , enumTypes = FastDict.empty
+                , recordTypes = FastSet.empty
+                }
+            }
+
+        Ok modulesInferred ->
+            let
+                grainDeclarationsWithoutExtraRecordTypeAliases :
+                    { errors : List String
+                    , declarations :
+                        { valuesAndFunctions :
+                            FastDict.Dict
+                                String
+                                { parameters : List GrainPattern
+                                , result : GrainExpression
+                                , type_ : GrainType
+                                }
+                        , typeAliases :
+                            FastDict.Dict
+                                String
+                                { parameters : List String
+                                , type_ : GrainType
+                                }
+                        , enumTypes :
+                            FastDict.Dict
+                                String
+                                { parameters : List String
+                                , variants : FastDict.Dict String (List GrainType)
+                                }
+                        }
+                    }
+                grainDeclarationsWithoutExtraRecordTypeAliases =
+                    modulesInferred
+                        |> List.foldr
+                            (\moduleInferred soFarAcrossModules ->
+                                let
+                                    moduleName : Elm.Syntax.ModuleName.ModuleName
+                                    moduleName =
+                                        moduleInferred.module_.moduleDefinition
+                                            |> Elm.Syntax.Node.value
+                                            |> moduleHeaderName
+
+                                    createdModuleContext : ModuleContext
+                                    createdModuleContext =
+                                        moduleContextMerge
+                                            (moduleInferred.module_.imports |> importsToModuleContext moduleMembers)
+                                            (case moduleMembers |> FastDict.get moduleName of
+                                                Nothing ->
+                                                    { valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup =
+                                                        FastDict.empty
+                                                    , variantLookup = FastDict.empty
+                                                    }
+
+                                                Just moduleLocalNames ->
+                                                    { valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup =
+                                                        FastSet.union
+                                                            moduleLocalNames.valueOrFunctionOrTypeAliasNames
+                                                            (moduleLocalNames.enumTypesExposingVariants
+                                                                |> FastDict.foldl
+                                                                    (\enumTypeName _ soFar ->
+                                                                        soFar |> FastSet.insert enumTypeName
+                                                                    )
+                                                                    FastSet.empty
+                                                            )
+                                                            |> FastSet.foldl
+                                                                (\name soFar ->
+                                                                    soFar
+                                                                        |> FastDict.insert ( [], name )
+                                                                            moduleName
+                                                                )
+                                                                FastDict.empty
+                                                    , variantLookup =
+                                                        moduleLocalNames.enumTypesExposingVariants
+                                                            |> FastDict.foldl
+                                                                (\_ variantNames soFarAcrossEnumTypes ->
+                                                                    variantNames
+                                                                        |> FastDict.foldl
+                                                                            (\name info soFar ->
+                                                                                soFar
+                                                                                    |> FastDict.insert ( [], name )
+                                                                                        { moduleOrigin = moduleName
+                                                                                        , valueCount = info.valueCount
+                                                                                        }
+                                                                            )
+                                                                            soFarAcrossEnumTypes
+                                                                )
+                                                                FastDict.empty
+                                                    }
+                                            )
+                                in
+                                moduleInferred.module_.declarations
+                                    |> List.foldr
+                                        (\(Elm.Syntax.Node.Node _ declaration) soFar ->
+                                            case declaration of
+                                                Elm.Syntax.Declaration.FunctionDeclaration syntaxValueOrFunctionDeclaration ->
+                                                    let
+                                                        declarationName : String
+                                                        declarationName =
+                                                            syntaxValueOrFunctionDeclaration.declaration
+                                                                |> Elm.Syntax.Node.value
+                                                                |> .name
+                                                                |> Elm.Syntax.Node.value
+                                                    in
+                                                    case moduleInferred.declarationsInferred |> FastDict.get declarationName of
+                                                        Just valueOrFunctionDeclarationInferred ->
+                                                            case
+                                                                valueOrFunctionDeclarationInferred
+                                                                    |> valueOrFunctionDeclaration createdModuleContext
+                                                            of
+                                                                Ok grainValueOrFunctionDeclaration ->
+                                                                    { errors = soFar.errors
+                                                                    , declarations =
+                                                                        { typeAliases = soFar.declarations.typeAliases
+                                                                        , enumTypes = soFar.declarations.enumTypes
+                                                                        , valuesAndFunctions =
+                                                                            soFar.declarations.valuesAndFunctions
+                                                                                |> FastDict.insert
+                                                                                    ({ moduleOrigin = moduleName
+                                                                                     , name = declarationName
+                                                                                     }
+                                                                                        |> referenceToGrainName
+                                                                                    )
+                                                                                    grainValueOrFunctionDeclaration
+                                                                        }
+                                                                    }
+
+                                                                Err error ->
+                                                                    { declarations = soFar.declarations
+                                                                    , errors = error :: soFar.errors
+                                                                    }
+
+                                                        Nothing ->
+                                                            { declarations = soFar.declarations
+                                                            , errors = (declarationName ++ " not inferred") :: soFar.errors
+                                                            }
+
+                                                Elm.Syntax.Declaration.AliasDeclaration syntaxTypeAliasDeclaration ->
+                                                    case syntaxTypeAliasDeclaration |> typeAliasDeclaration createdModuleContext of
                                                         Ok grainTypeAliasDeclaration ->
                                                             { errors = soFar.errors
                                                             , declarations =
                                                                 { valuesAndFunctions = soFar.declarations.valuesAndFunctions
-                                                                , typeAliases = soFar.declarations.typeAliases
-                                                                , enumTypes =
-                                                                    soFar.declarations.enumTypes
+                                                                , enumTypes = soFar.declarations.enumTypes
+                                                                , typeAliases =
+                                                                    soFar.declarations.typeAliases
                                                                         |> FastDict.insert
                                                                             ({ moduleOrigin = moduleName
                                                                              , name = grainTypeAliasDeclaration.name
@@ -3525,21 +3804,7 @@ modules syntaxDeclarationsIncludingOverwrittenOnes =
                                                                                 |> stringFirstCharToUpper
                                                                             )
                                                                             { parameters = grainTypeAliasDeclaration.parameters
-                                                                            , variants =
-                                                                                grainTypeAliasDeclaration.variants
-                                                                                    |> FastDict.foldl
-                                                                                        (\variantName maybeValue variantsSoFar ->
-                                                                                            variantsSoFar
-                                                                                                |> FastDict.insert
-                                                                                                    ({ moduleOrigin = moduleName
-                                                                                                     , name = variantName
-                                                                                                     }
-                                                                                                        |> referenceToGrainName
-                                                                                                        |> stringFirstCharToUpper
-                                                                                                    )
-                                                                                                    maybeValue
-                                                                                        )
-                                                                                        FastDict.empty
+                                                                            , type_ = grainTypeAliasDeclaration.type_
                                                                             }
                                                                 }
                                                             }
@@ -3549,96 +3814,140 @@ modules syntaxDeclarationsIncludingOverwrittenOnes =
                                                             , errors = error :: soFar.errors
                                                             }
 
-                                        Elm.Syntax.Declaration.PortDeclaration _ ->
-                                            soFar
+                                                Elm.Syntax.Declaration.CustomTypeDeclaration syntaxEnumTypeDeclaration ->
+                                                    case syntaxEnumTypeDeclaration.name |> Elm.Syntax.Node.value of
+                                                        "Maybe" ->
+                                                            soFar
 
-                                        Elm.Syntax.Declaration.InfixDeclaration _ ->
-                                            soFar
+                                                        _ ->
+                                                            case syntaxEnumTypeDeclaration |> enumTypeDeclaration createdModuleContext of
+                                                                Ok grainTypeAliasDeclaration ->
+                                                                    { errors = soFar.errors
+                                                                    , declarations =
+                                                                        { valuesAndFunctions = soFar.declarations.valuesAndFunctions
+                                                                        , typeAliases = soFar.declarations.typeAliases
+                                                                        , enumTypes =
+                                                                            soFar.declarations.enumTypes
+                                                                                |> FastDict.insert
+                                                                                    ({ moduleOrigin = moduleName
+                                                                                     , name = grainTypeAliasDeclaration.name
+                                                                                     }
+                                                                                        |> referenceToGrainName
+                                                                                        |> stringFirstCharToUpper
+                                                                                    )
+                                                                                    { parameters = grainTypeAliasDeclaration.parameters
+                                                                                    , variants =
+                                                                                        grainTypeAliasDeclaration.variants
+                                                                                            |> FastDict.foldl
+                                                                                                (\variantName maybeValue variantsSoFar ->
+                                                                                                    variantsSoFar
+                                                                                                        |> FastDict.insert
+                                                                                                            ({ moduleOrigin = moduleName
+                                                                                                             , name = variantName
+                                                                                                             }
+                                                                                                                |> referenceToGrainName
+                                                                                                                |> stringFirstCharToUpper
+                                                                                                            )
+                                                                                                            maybeValue
+                                                                                                )
+                                                                                                FastDict.empty
+                                                                                    }
+                                                                        }
+                                                                    }
 
-                                        Elm.Syntax.Declaration.Destructuring _ _ ->
-                                            soFar
-                                )
-                                soFarAcrossModules
-                    )
-                    { errors = []
-                    , declarations =
-                        { valuesAndFunctions = FastDict.empty
-                        , typeAliases = FastDict.empty
-                        , enumTypes = FastDict.empty
-                        }
-                    }
+                                                                Err error ->
+                                                                    { declarations = soFar.declarations
+                                                                    , errors = error :: soFar.errors
+                                                                    }
 
-        additionalRecordTypeAliases : FastSet.Set (List String)
-        additionalRecordTypeAliases =
-            FastSet.union
-                (grainDeclarationsWithoutExtraRecordTypeAliases.declarations.valuesAndFunctions
-                    |> fastDictMapToFastSetAndUnify
-                        (\valueOrFunctionInfo ->
-                            FastSet.union
-                                (valueOrFunctionInfo.result
-                                    |> grainExpressionContainedConstructedRecords
-                                )
-                                (case valueOrFunctionInfo.type_ of
-                                    Nothing ->
-                                        FastSet.empty
+                                                Elm.Syntax.Declaration.PortDeclaration _ ->
+                                                    soFar
 
-                                    Just valueOrFunctionType ->
-                                        valueOrFunctionType |> grainTypeContainedRecords
+                                                Elm.Syntax.Declaration.InfixDeclaration _ ->
+                                                    soFar
+
+                                                Elm.Syntax.Declaration.Destructuring _ _ ->
+                                                    soFar
+                                        )
+                                        soFarAcrossModules
+                            )
+                            { errors = []
+                            , declarations =
+                                { valuesAndFunctions = FastDict.empty
+                                , typeAliases = FastDict.empty
+                                , enumTypes = FastDict.empty
+                                }
+                            }
+
+                additionalRecordTypeAliases : FastSet.Set (List String)
+                additionalRecordTypeAliases =
+                    FastSet.union
+                        (grainDeclarationsWithoutExtraRecordTypeAliases.declarations.valuesAndFunctions
+                            |> fastDictMapToFastSetAndUnify
+                                (\valueOrFunctionInfo ->
+                                    FastSet.union
+                                        (valueOrFunctionInfo.result
+                                            |> grainExpressionContainedConstructedRecords
+                                        )
+                                        (valueOrFunctionInfo.type_
+                                            |> grainTypeContainedRecords
+                                        )
                                 )
                         )
-                )
-                (FastSet.union
-                    (grainDeclarationsWithoutExtraRecordTypeAliases.declarations.typeAliases
-                        |> fastDictMapToFastSetAndUnify
-                            (\typeAliasInfo ->
-                                typeAliasInfo.type_
-                                    |> grainTypeContainedRecords
+                        (FastSet.union
+                            (grainDeclarationsWithoutExtraRecordTypeAliases.declarations.typeAliases
+                                |> fastDictMapToFastSetAndUnify
+                                    (\typeAliasInfo ->
+                                        typeAliasInfo.type_
+                                            |> grainTypeContainedRecords
+                                    )
                             )
-                    )
-                    (grainDeclarationsWithoutExtraRecordTypeAliases.declarations.enumTypes
-                        |> fastDictMapToFastSetAndUnify
-                            (\enumTypeInfo ->
-                                enumTypeInfo.variants
-                                    |> fastDictMapToFastSetAndUnify
-                                        (\values ->
-                                            values
-                                                |> listMapToFastSetsAndUnify
-                                                    grainTypeContainedRecords
-                                        )
+                            (grainDeclarationsWithoutExtraRecordTypeAliases.declarations.enumTypes
+                                |> fastDictMapToFastSetAndUnify
+                                    (\enumTypeInfo ->
+                                        enumTypeInfo.variants
+                                            |> fastDictMapToFastSetAndUnify
+                                                (\values ->
+                                                    values
+                                                        |> listMapToFastSetsAndUnify
+                                                            grainTypeContainedRecords
+                                                )
+                                    )
                             )
-                    )
-                )
-    in
-    { declarations =
-        { valuesAndFunctions =
-            grainDeclarationsWithoutExtraRecordTypeAliases.declarations.valuesAndFunctions
-                |> FastDict.map
-                    (\_ valueOrFunctionInfo ->
-                        { type_ = valueOrFunctionInfo.type_
-                        , parameters = valueOrFunctionInfo.parameters
-                        , result = valueOrFunctionInfo.result
-                        }
-                    )
-        , enumTypes =
-            grainDeclarationsWithoutExtraRecordTypeAliases.declarations.enumTypes
-                |> FastDict.map
-                    (\_ typeAliasInfo ->
-                        { parameters = typeAliasInfo.parameters
-                        , variants = typeAliasInfo.variants
-                        }
-                    )
-        , recordTypes = additionalRecordTypeAliases
-        , typeAliases =
-            grainDeclarationsWithoutExtraRecordTypeAliases.declarations.typeAliases
-                |> FastDict.map
-                    (\_ typeAliasInfo ->
-                        { parameters = typeAliasInfo.parameters
-                        , type_ = typeAliasInfo.type_
-                        }
-                    )
-        }
-    , errors = grainDeclarationsWithoutExtraRecordTypeAliases.errors
-    }
+                        )
+            in
+            { declarations =
+                { valuesAndFunctions =
+                    grainDeclarationsWithoutExtraRecordTypeAliases.declarations.valuesAndFunctions
+                        |> FastDict.map
+                            (\_ valueOrFunctionInfo ->
+                                { type_ = valueOrFunctionInfo.type_
+                                , parameters = valueOrFunctionInfo.parameters
+                                , result = valueOrFunctionInfo.result
+                                }
+                            )
+                , enumTypes =
+                    grainDeclarationsWithoutExtraRecordTypeAliases.declarations.enumTypes
+                        |> FastDict.map
+                            (\_ typeAliasInfo ->
+                                { parameters = typeAliasInfo.parameters
+                                , variants = typeAliasInfo.variants
+                                }
+                            )
+                , recordTypes = additionalRecordTypeAliases
+                , typeAliases =
+                    grainDeclarationsWithoutExtraRecordTypeAliases.declarations.typeAliases
+                        |> FastDict.map
+                            (\_ typeAliasInfo ->
+                                { parameters = typeAliasInfo.parameters
+                                , type_ = typeAliasInfo.type_
+                                }
+                            )
+                }
+            , errors =
+                syntaxModuleTypes.errors
+                    ++ grainDeclarationsWithoutExtraRecordTypeAliases.errors
+            }
 
 
 fastDictMapToFastSetAndUnify :
@@ -3676,47 +3985,49 @@ moduleHeaderName moduleHeader =
 
 valueOrFunctionDeclaration :
     ModuleContext
-    -> Elm.Syntax.Expression.Function
+    ->
+        { declaration_
+            | parameters :
+                List
+                    (ElmSyntaxTypeInfer.TypedNode
+                        (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String))
+                        (ElmSyntaxTypeInfer.Type String)
+                    )
+            , result :
+                ElmSyntaxTypeInfer.TypedNode
+                    (ElmSyntaxTypeInfer.Expression (ElmSyntaxTypeInfer.Type String))
+                    (ElmSyntaxTypeInfer.Type String)
+            , type_ : ElmSyntaxTypeInfer.Type String
+        }
     ->
         Result
             String
-            { name : String
-            , parameters : List GrainPattern
+            { parameters : List GrainPattern
             , result : GrainExpression
-            , type_ : Maybe GrainType
+            , type_ : GrainType
             }
 valueOrFunctionDeclaration moduleOriginLookup syntaxDeclarationValueOrFunction =
-    let
-        implementation : Elm.Syntax.Expression.FunctionImplementation
-        implementation =
-            syntaxDeclarationValueOrFunction.declaration
-                |> Elm.Syntax.Node.value
-    in
     resultAndThen2
         (\parameters maybeType ->
             Result.map
                 (\result ->
-                    { name =
-                        implementation.name
-                            |> Elm.Syntax.Node.value
-                    , type_ = maybeType
-                    , parameters =
-                        parameters
-                            |> List.map .pattern
+                    { type_ = maybeType
+                    , -- TODO remove parameters
+                      parameters = []
                     , result =
-                        case parameters of
+                        case parameters |> List.map (\param -> { type_ = param.type_, pattern = param.pattern }) of
                             [] ->
                                 result
 
                             parameter0 :: parameter1Up ->
                                 GrainExpressionLambda
-                                    { parameter0 = parameter0.pattern
-                                    , parameter1Up = parameter1Up |> List.map .pattern
+                                    { parameter0 = parameter0
+                                    , parameter1Up = parameter1Up
                                     , result = result
                                     }
                     }
                 )
-                (implementation.expression
+                (syntaxDeclarationValueOrFunction.result
                     |> expression
                         { valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup =
                             moduleOriginLookup.valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup
@@ -3728,18 +4039,12 @@ valueOrFunctionDeclaration moduleOriginLookup syntaxDeclarationValueOrFunction =
                         }
                 )
         )
-        (implementation.arguments
-            |> listMapAndCombineOk (\p -> p |> pattern moduleOriginLookup)
+        (syntaxDeclarationValueOrFunction.parameters
+            |> listMapAndCombineOk
+                (\parameter -> parameter |> typedPattern)
         )
-        (case syntaxDeclarationValueOrFunction.signature of
-            Nothing ->
-                Ok Nothing
-
-            Just (Elm.Syntax.Node.Node _ signature) ->
-                Result.map Just
-                    (signature.typeAnnotation
-                        |> type_ moduleOriginLookup
-                    )
+        (syntaxDeclarationValueOrFunction.type_
+            |> type_
         )
 
 
@@ -3850,95 +4155,89 @@ expression :
             }
     , variablesFromWithinDeclarationInScope : FastSet.Set String
     }
-    -> Elm.Syntax.Node.Node Elm.Syntax.Expression.Expression
+    ->
+        ElmSyntaxTypeInfer.TypedNode
+            (ElmSyntaxTypeInfer.Expression (ElmSyntaxTypeInfer.Type String))
+            (ElmSyntaxTypeInfer.Type String)
     -> Result String GrainExpression
-expression context (Elm.Syntax.Node.Node _ syntaxExpression) =
+expression context expressionTypedNode =
     -- IGNORE TCO
-    case syntaxExpression of
-        Elm.Syntax.Expression.UnitExpr ->
+    case expressionTypedNode.value of
+        ElmSyntaxTypeInfer.ExpressionUnit ->
             Ok grainExpressionVoid
 
-        Elm.Syntax.Expression.Integer intValue ->
-            Ok (GrainExpressionFloat (intValue |> Basics.toFloat))
+        ElmSyntaxTypeInfer.ExpressionInteger intValue ->
+            Ok (GrainExpressionFloat (intValue.value |> Basics.toFloat))
 
-        Elm.Syntax.Expression.Hex intValue ->
-            Ok (GrainExpressionFloat (intValue |> Basics.toFloat))
-
-        Elm.Syntax.Expression.Floatable floatValue ->
+        ElmSyntaxTypeInfer.ExpressionFloat floatValue ->
             Ok (GrainExpressionFloat floatValue)
 
-        Elm.Syntax.Expression.CharLiteral charValue ->
+        ElmSyntaxTypeInfer.ExpressionChar charValue ->
             Ok (GrainExpressionChar charValue)
 
-        Elm.Syntax.Expression.Literal stringValue ->
+        ElmSyntaxTypeInfer.ExpressionString stringValue ->
             Ok (GrainExpressionString stringValue)
 
-        Elm.Syntax.Expression.RecordAccessFunction fieldName ->
-            let
-                recordVariableName : String
-                recordVariableName =
-                    "generated_record"
-            in
-            Ok
-                (GrainExpressionLambda
-                    { parameter0 = GrainPatternVariable recordVariableName
-                    , parameter1Up = []
-                    , result =
-                        GrainExpressionRecordAccess
-                            { record =
-                                GrainExpressionReference
-                                    { moduleOrigin = Nothing
-                                    , name = recordVariableName
+        ElmSyntaxTypeInfer.ExpressionRecordAccessFunction fieldName ->
+            case expressionTypedNode.type_ of
+                ElmSyntaxTypeInfer.TypeNotVariable (ElmSyntaxTypeInfer.TypeFunction typeFunction) ->
+                    let
+                        recordVariableName : String
+                        recordVariableName =
+                            "generated_record"
+                    in
+                    Result.map
+                        (\recordVariableGrainType ->
+                            GrainExpressionLambda
+                                { parameter0 =
+                                    { pattern = GrainPatternVariable recordVariableName
+                                    , type_ = recordVariableGrainType
                                     }
-                            , field =
-                                fieldName
-                                    |> String.replace "." ""
-                                    |> variableNameDisambiguateFromGrainKeywords
-                            }
-                    }
-                )
+                                , parameter1Up = []
+                                , result =
+                                    GrainExpressionRecordAccess
+                                        { record =
+                                            GrainExpressionReference
+                                                { moduleOrigin = Nothing
+                                                , name = recordVariableName
+                                                }
+                                        , field =
+                                            fieldName
+                                                |> String.replace "." ""
+                                                |> variableNameDisambiguateFromGrainKeywords
+                                        }
+                                }
+                        )
+                        (typeFunction.output |> type_)
 
-        Elm.Syntax.Expression.Operator _ ->
-            -- invalid syntax
-            Err "operator is invalid syntax"
+                _ ->
+                    Err "record access function has an inferred type that wasn't a function"
 
-        Elm.Syntax.Expression.PrefixOperator operatorSymbol ->
+        ElmSyntaxTypeInfer.ExpressionOperatorFunction operatorSymbol ->
             Result.map
                 (\operationFunctionReference ->
                     GrainExpressionReference operationFunctionReference
                 )
                 (expressionOperatorToGrainFunctionReference operatorSymbol)
 
-        Elm.Syntax.Expression.GLSLExpression _ ->
-            Err "glsl not supported"
+        ElmSyntaxTypeInfer.ExpressionCall call ->
+            Result.map3
+                (\called argument0 argument1Up ->
+                    condenseExpressionCall
+                        { called = called
+                        , argument0 = argument0
+                        , argument1Up = argument1Up
+                        }
+                )
+                (call.called |> expression context)
+                (call.argument0 |> expression context)
+                (call.argument1Up
+                    |> listMapAndCombineOk
+                        (\argument -> argument |> expression context)
+                )
 
-        Elm.Syntax.Expression.Application application ->
-            case application of
-                [] ->
-                    Err "application without any parts is invalid"
-
-                [ inParens ] ->
-                    -- invalid syntax
-                    expression context inParens
-
-                calledNode :: argument0Node :: argument1UpNodes ->
-                    Result.map3
-                        (\called argument0 argument1Up ->
-                            condenseExpressionCall
-                                { called = called
-                                , argument0 = argument0
-                                , argument1Up = argument1Up
-                                }
-                        )
-                        (calledNode |> expression context)
-                        (argument0Node |> expression context)
-                        (argument1UpNodes
-                            |> listMapAndCombineOk
-                                (\argument -> argument |> expression context)
-                        )
-
-        Elm.Syntax.Expression.OperatorApplication operatorSymbol _ leftNode rightNode ->
-            case operatorSymbol of
+        ElmSyntaxTypeInfer.ExpressionInfixOperation infixOperation ->
+            case infixOperation.symbol of
                 "|>" ->
                     Result.map2
                         (\argument called ->
@@ -3948,8 +4247,8 @@ expression context (Elm.Syntax.Node.Node _ syntaxExpression) =
                                 , argument1Up = []
                                 }
                         )
-                        (leftNode |> expression context)
-                        (rightNode |> expression context)
+                        (infixOperation.left |> expression context)
+                        (infixOperation.right |> expression context)
 
                 "<|" ->
                     Result.map2
@@ -3960,8 +4259,8 @@ expression context (Elm.Syntax.Node.Node _ syntaxExpression) =
                                 , argument1Up = []
                                 }
                         )
-                        (leftNode |> expression context)
-                        (rightNode |> expression context)
+                        (infixOperation.left |> expression context)
+                        (infixOperation.right |> expression context)
 
                 "++" ->
                     Result.map2
@@ -3991,8 +4290,8 @@ expression context (Elm.Syntax.Node.Node _ syntaxExpression) =
                                     , argument1Up = [ right ]
                                     }
                         )
-                        (leftNode |> expression context)
-                        (rightNode |> expression context)
+                        (infixOperation.left |> expression context)
+                        (infixOperation.right |> expression context)
 
                 otherOperatorSymbol ->
                     Result.map3
@@ -4005,14 +4304,14 @@ expression context (Elm.Syntax.Node.Node _ syntaxExpression) =
                                 }
                         )
                         (expressionOperatorToGrainFunctionReference otherOperatorSymbol)
-                        (leftNode |> expression context)
-                        (rightNode |> expression context)
+                        (infixOperation.left |> expression context)
+                        (infixOperation.right |> expression context)
 
-        Elm.Syntax.Expression.FunctionOrValue qualification name ->
+        ElmSyntaxTypeInfer.ExpressionReference reference ->
             let
                 asVariableFromWithinDeclaration : Maybe String
                 asVariableFromWithinDeclaration =
-                    case qualification of
+                    case reference.moduleOrigin of
                         _ :: _ ->
                             Nothing
 
@@ -4020,7 +4319,7 @@ expression context (Elm.Syntax.Node.Node _ syntaxExpression) =
                             let
                                 grainName : String
                                 grainName =
-                                    name |> variableNameDisambiguateFromGrainKeywords
+                                    reference.name |> variableNameDisambiguateFromGrainKeywords
                             in
                             if
                                 context.variablesFromWithinDeclarationInScope
@@ -4041,122 +4340,111 @@ expression context (Elm.Syntax.Node.Node _ syntaxExpression) =
                         )
 
                 Nothing ->
-                    case context.variantLookup |> FastDict.get ( qualification, name ) of
-                        Just variantInfo ->
+                    case context.variantLookup |> FastDict.get ( reference.moduleOrigin, reference.name ) of
+                        Just _ ->
                             let
-                                reference : { moduleOrigin : Maybe String, name : String }
-                                reference =
-                                    case { moduleOrigin = variantInfo.moduleOrigin, name = name } |> referenceToCoreGrain of
+                                grainReference : { moduleOrigin : Maybe String, name : String }
+                                grainReference =
+                                    case { moduleOrigin = reference.moduleOrigin, name = reference.name } |> referenceToCoreGrain of
+                                        Just grainCoreReference ->
+                                            grainCoreReference
+
+                                        Nothing ->
+                                            { moduleOrigin = Nothing
+                                            , name =
+                                                referenceToGrainName
+                                                    { moduleOrigin = reference.moduleOrigin
+                                                    , name = reference.name
+                                                    }
+                                                    |> stringFirstCharToUpper
+                                            }
+                            in
+                            case expressionTypedNode.type_ |> inferredTypeExpandFunction |> .inputs |> listMapAndCombineOk type_ of
+                                Err error ->
+                                    Err error
+
+                                Ok [] ->
+                                    Ok (GrainExpressionReference grainReference)
+
+                                Ok [ _ ] ->
+                                    Ok (GrainExpressionReference grainReference)
+
+                                Ok (valueType0 :: valueType1 :: valueType2Up) ->
+                                    let
+                                        generatedValueVariableReference : Int -> GrainExpression
+                                        generatedValueVariableReference valueIndex =
+                                            GrainExpressionReference
+                                                { moduleOrigin = Nothing
+                                                , name =
+                                                    "generated_"
+                                                        ++ (valueIndex |> String.fromInt)
+                                                }
+
+                                        generatedValueTypedPattern : Int -> GrainPattern
+                                        generatedValueTypedPattern valueIndex =
+                                            GrainPatternVariable
+                                                ("generated_"
+                                                    ++ (valueIndex |> String.fromInt)
+                                                )
+                                    in
+                                    Ok
+                                        (GrainExpressionLambda
+                                            { parameter0 =
+                                                { pattern = generatedValueTypedPattern 0
+                                                , type_ = valueType0
+                                                }
+                                            , parameter1Up =
+                                                (valueType1 :: valueType2Up)
+                                                    |> List.indexedMap
+                                                        (\i valueType ->
+                                                            { pattern = generatedValueTypedPattern (i + 1)
+                                                            , type_ = valueType
+                                                            }
+                                                        )
+                                            , result =
+                                                GrainExpressionCall
+                                                    { called = GrainExpressionReference grainReference
+                                                    , argument0 =
+                                                        generatedValueVariableReference 0
+                                                    , argument1Up =
+                                                        (valueType1 :: valueType2Up)
+                                                            |> List.indexedMap
+                                                                (\i _ -> generatedValueVariableReference (i + 1))
+                                                    }
+                                            }
+                                        )
+
+                        Nothing ->
+                            Ok
+                                (GrainExpressionReference
+                                    (case
+                                        { moduleOrigin = reference.moduleOrigin, name = reference.name }
+                                            |> referenceToCoreGrain
+                                     of
                                         Just grainReference ->
                                             grainReference
 
                                         Nothing ->
                                             { moduleOrigin = Nothing
                                             , name =
-                                                referenceToGrainName
-                                                    { moduleOrigin = variantInfo.moduleOrigin
-                                                    , name = name
-                                                    }
-                                                    |> stringFirstCharToUpper
+                                                -- TODO should be redundant because variant check
+                                                if reference.name |> stringFirstCharIsUpper then
+                                                    referenceToGrainName
+                                                        { moduleOrigin = reference.moduleOrigin
+                                                        , name = reference.name
+                                                        }
+                                                        |> stringFirstCharToUpper
+
+                                                else
+                                                    referenceToGrainName
+                                                        { moduleOrigin = reference.moduleOrigin
+                                                        , name = reference.name
+                                                        }
                                             }
-                            in
-                            Ok
-                                (case variantInfo.valueCount of
-                                    0 ->
-                                        GrainExpressionReference reference
-
-                                    1 ->
-                                        GrainExpressionReference reference
-
-                                    valueCountAtLeast2 ->
-                                        let
-                                            generatedValueVariableReference : Int -> GrainExpression
-                                            generatedValueVariableReference valueIndex =
-                                                GrainExpressionReference
-                                                    { moduleOrigin = Nothing
-                                                    , name =
-                                                        "generated_"
-                                                            ++ (valueIndex |> String.fromInt)
-                                                    }
-
-                                            generatedValuePattern : Int -> GrainPattern
-                                            generatedValuePattern valueIndex =
-                                                GrainPatternVariable
-                                                    ("generated_"
-                                                        ++ (valueIndex |> String.fromInt)
-                                                    )
-                                        in
-                                        GrainExpressionLambda
-                                            { parameter0 = generatedValuePattern 0
-                                            , parameter1Up =
-                                                generatedValuePattern 1
-                                                    :: (List.range 2 (valueCountAtLeast2 - 1)
-                                                            |> List.map generatedValuePattern
-                                                       )
-                                            , result =
-                                                GrainExpressionCall
-                                                    { called = GrainExpressionReference reference
-                                                    , argument0 =
-                                                        generatedValueVariableReference 0
-                                                    , argument1Up =
-                                                        generatedValueVariableReference 1
-                                                            :: (List.range 2 (valueCountAtLeast2 - 1)
-                                                                    |> List.map generatedValueVariableReference
-                                                               )
-                                                    }
-                                            }
+                                    )
                                 )
 
-                        Nothing ->
-                            case context.valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup |> FastDict.get ( qualification, name ) of
-                                Just moduleOrigin ->
-                                    Ok
-                                        (GrainExpressionReference
-                                            (case { moduleOrigin = moduleOrigin, name = name } |> referenceToCoreGrain of
-                                                Just grainReference ->
-                                                    grainReference
-
-                                                Nothing ->
-                                                    { moduleOrigin = Nothing
-                                                    , name =
-                                                        -- TODO should be redundant because variant check
-                                                        if name |> stringFirstCharIsUpper then
-                                                            referenceToGrainName
-                                                                { moduleOrigin = moduleOrigin
-                                                                , name = name
-                                                                }
-                                                                |> stringFirstCharToUpper
-
-                                                        else
-                                                            referenceToGrainName
-                                                                { moduleOrigin = moduleOrigin
-                                                                , name = name
-                                                                }
-                                                    }
-                                            )
-                                        )
-
-                                Nothing ->
-                                    case qualification of
-                                        qualificationPart0 :: qualificationPart1Up ->
-                                            Err
-                                                ("could not find module origin of the qualified reference "
-                                                    ++ (((qualificationPart0 :: qualificationPart1Up) |> String.join ".")
-                                                            ++ "."
-                                                            ++ name
-                                                       )
-                                                )
-
-                                        [] ->
-                                            -- TODO convert to error
-                                            Ok
-                                                (GrainExpressionReference
-                                                    { moduleOrigin = Nothing
-                                                    , name = name |> variableNameDisambiguateFromGrainKeywords
-                                                    }
-                                                )
-
-        Elm.Syntax.Expression.IfBlock conditionNode onTrueNode onFalseNode ->
+        ElmSyntaxTypeInfer.ExpressionIfThenElse ifThenElse ->
             Result.map3
                 (\condition onTrue onFalse ->
                     GrainExpressionIfElse
@@ -4165,14 +4453,14 @@ expression context (Elm.Syntax.Node.Node _ syntaxExpression) =
                         , onFalse = onFalse
                         }
                 )
-                (conditionNode |> expression context)
-                (onTrueNode |> expression context)
-                (onFalseNode |> expression context)
+                (ifThenElse.condition |> expression context)
+                (ifThenElse.onTrue |> expression context)
+                (ifThenElse.onFalse |> expression context)
 
-        Elm.Syntax.Expression.ParenthesizedExpression inParens ->
+        ElmSyntaxTypeInfer.ExpressionParenthesized inParens ->
             inParens |> expression context
 
-        Elm.Syntax.Expression.Negation inNegationNode ->
+        ElmSyntaxTypeInfer.ExpressionNegation inNegationNode ->
             Result.map
                 (\inNegation ->
                     GrainExpressionCall
@@ -4185,248 +4473,240 @@ expression context (Elm.Syntax.Node.Node _ syntaxExpression) =
                 )
                 (inNegationNode |> expression context)
 
-        Elm.Syntax.Expression.RecordAccess recordNode (Elm.Syntax.Node.Node _ fieldName) ->
+        ElmSyntaxTypeInfer.ExpressionRecordAccess recordAccess ->
             Result.map
                 (\record ->
                     GrainExpressionRecordAccess
                         { record = record
                         , field =
-                            fieldName
+                            recordAccess.fieldName
                                 |> String.replace "." ""
                                 |> variableNameDisambiguateFromGrainKeywords
                         }
                 )
-                (recordNode |> expression context)
+                (recordAccess.record |> expression context)
 
-        Elm.Syntax.Expression.TupledExpression parts ->
-            case parts of
-                [] ->
-                    -- invalid syntax
-                    -- should be handled by Elm.Syntax.Expression.UnitExpr
-                    Ok grainExpressionVoid
+        ElmSyntaxTypeInfer.ExpressionTuple parts ->
+            Result.map2
+                (\part0 part1 ->
+                    GrainExpressionTuple
+                        { part0 = part0
+                        , part1 = part1
+                        , part2Up = []
+                        }
+                )
+                (parts.part0 |> expression context)
+                (parts.part1 |> expression context)
 
-                [ inParens ] ->
-                    -- invalid syntax
-                    -- should be handled by Elm.Syntax.Expression.ParenthesizedExpression
-                    expression context inParens
+        ElmSyntaxTypeInfer.ExpressionTriple parts ->
+            Result.map3
+                (\part0 part1 part2 ->
+                    GrainExpressionTuple
+                        { part0 = part0
+                        , part1 = part1
+                        , part2Up = [ part2 ]
+                        }
+                )
+                (parts.part0 |> expression context)
+                (parts.part1 |> expression context)
+                (parts.part2 |> expression context)
 
-                [ part0Node, part1Node ] ->
-                    Result.map2
-                        (\part0 part1 ->
-                            GrainExpressionTuple
-                                { part0 = part0
-                                , part1 = part1
-                                , part2Up = []
-                                }
-                        )
-                        (part0Node |> expression context)
-                        (part1Node |> expression context)
-
-                [ part0Node, part1Node, part2Node ] ->
-                    Result.map3
-                        (\part0 part1 part2 ->
-                            GrainExpressionTuple
-                                { part0 = part0
-                                , part1 = part1
-                                , part2Up = [ part2 ]
-                                }
-                        )
-                        (part0Node |> expression context)
-                        (part1Node |> expression context)
-                        (part2Node |> expression context)
-
-                _ :: _ :: _ :: _ :: _ ->
-                    Err "too many tuple parts"
-
-        Elm.Syntax.Expression.ListExpr elementNodes ->
+        ElmSyntaxTypeInfer.ExpressionList elementNodes ->
             Result.map (\elements -> GrainExpressionList elements)
                 (elementNodes
                     |> listMapAndCombineOk
                         (\element -> element |> expression context)
                 )
 
-        Elm.Syntax.Expression.RecordExpr fieldNodes ->
+        ElmSyntaxTypeInfer.ExpressionRecord fieldNodes ->
             Result.map (\fields -> GrainExpressionRecord fields)
                 (fieldNodes
                     |> listMapAndCombineOk
-                        (\(Elm.Syntax.Node.Node _ ( Elm.Syntax.Node.Node _ fieldName, fieldValueNode )) ->
+                        (\field ->
                             Result.map
                                 (\fieldValue ->
-                                    ( fieldName
+                                    ( field.name
                                         |> variableNameDisambiguateFromGrainKeywords
                                     , fieldValue
                                     )
                                 )
-                                (fieldValueNode |> expression context)
+                                (field.value |> expression context)
                         )
                     |> Result.map FastDict.fromList
                 )
 
-        Elm.Syntax.Expression.RecordUpdateExpression (Elm.Syntax.Node.Node _ originalRecordVariable) fieldNodes ->
+        ElmSyntaxTypeInfer.ExpressionRecordUpdate recordUpdate ->
             Result.map
                 (\fields ->
+                    let
+                        grainRecordVariable : String
+                        grainRecordVariable =
+                            recordUpdate.recordVariable.value.name
+                                |> variableNameDisambiguateFromGrainKeywords
+                    in
                     GrainExpressionRecordUpdate
                         { originalRecordVariable =
                             referenceToGrainName
                                 { moduleOrigin =
-                                    case context.valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup |> FastDict.get ( [], originalRecordVariable ) of
+                                    case
+                                        context.valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup
+                                            |> FastDict.get ( [], grainRecordVariable )
+                                    of
                                         Nothing ->
                                             []
 
                                         Just moduleOrigin ->
                                             moduleOrigin
-                                , name = originalRecordVariable |> variableNameDisambiguateFromGrainKeywords
+                                , name = grainRecordVariable
                                 }
                         , fields = fields
                         }
                 )
-                (fieldNodes
+                ((recordUpdate.field0 :: recordUpdate.field1Up)
                     |> listMapAndCombineOk
-                        (\(Elm.Syntax.Node.Node _ ( Elm.Syntax.Node.Node _ fieldName, fieldValueNode )) ->
+                        (\field ->
                             Result.map
                                 (\fieldValue ->
-                                    ( fieldName, fieldValue )
+                                    ( field.name, fieldValue )
                                 )
-                                (fieldValueNode |> expression context)
+                                (field.value |> expression context)
                         )
                     |> Result.map FastDict.fromList
                 )
 
-        Elm.Syntax.Expression.LambdaExpression lambda ->
-            case lambda.args of
-                [] ->
-                    Err "lambda without parameters is invalid syntax"
-
-                parameter0Node :: parameter1UpNodes ->
-                    resultAndThen2
-                        (\parameter0 parameter1Up ->
-                            Result.map
-                                (\result ->
-                                    GrainExpressionLambda
-                                        { parameter0 = parameter0.pattern
-                                        , parameter1Up =
-                                            parameter1Up |> List.map .pattern
-                                        , result =
-                                            result
-                                        }
-                                )
-                                (lambda.expression
-                                    |> expression
-                                        (context
-                                            |> expressionContextAddVariablesInScope
-                                                (FastSet.union
-                                                    parameter0.introducedVariables
-                                                    (parameter1Up
-                                                        |> listMapToFastSetsAndUnify .introducedVariables
-                                                    )
-                                                )
-                                        )
-                                )
-                        )
-                        (parameter0Node
-                            |> pattern
-                                { valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup =
-                                    context.valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup
-                                , variantLookup = context.variantLookup
-                                }
-                        )
-                        (parameter1UpNodes
-                            |> listMapAndCombineOk
-                                (\parameter ->
-                                    parameter
-                                        |> pattern
-                                            { valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup =
-                                                context.valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup
-                                            , variantLookup = context.variantLookup
-                                            }
-                                )
-                        )
-
-        Elm.Syntax.Expression.CaseExpression caseOf ->
-            case caseOf.cases of
-                [] ->
-                    Err "case-of without cases invalid syntax"
-
-                case0Node :: case1Node ->
-                    Result.map3
-                        (\matched case0 case1Up ->
-                            GrainExpressionMatch
-                                { matched = matched
-                                , case0 = case0
-                                , case1Up = case1Up
-                                }
-                        )
-                        (caseOf.expression |> expression context)
-                        (case0Node |> case_ context)
-                        (case1Node
-                            |> listMapAndCombineOk
-                                (\parameter ->
-                                    parameter |> case_ context
-                                )
-                        )
-
-        Elm.Syntax.Expression.LetExpression letIn ->
-            case letIn.declarations of
-                [] ->
-                    Err "let-in without declarations is invalid syntax"
-
-                declaration0Node :: declaration1UpNode ->
-                    let
-                        variablesForWholeLetIn : FastSet.Set String
-                        variablesForWholeLetIn =
-                            (declaration0Node :: declaration1UpNode)
-                                |> listMapToFastSetsAndUnify
-                                    (\(Elm.Syntax.Node.Node _ syntaxLetDeclaration) ->
-                                        case syntaxLetDeclaration of
-                                            Elm.Syntax.Expression.LetFunction letFunction ->
-                                                FastSet.singleton
-                                                    (letFunction.declaration
-                                                        |> Elm.Syntax.Node.value
-                                                        |> .name
-                                                        |> Elm.Syntax.Node.value
-                                                        |> variableNameDisambiguateFromGrainKeywords
-                                                    )
-
-                                            Elm.Syntax.Expression.LetDestructuring patternNode _ ->
-                                                patternNode
-                                                    |> patternBindings
-                                                    |> listMapAndToFastSet
-                                                        variableNameDisambiguateFromGrainKeywords
-                                    )
-                    in
-                    Result.map3
-                        (\declaration0 declaration1Up result ->
-                            GrainExpressionWithLetDeclarations
-                                { declaration0 = declaration0
-                                , declaration1Up = declaration1Up
+        ElmSyntaxTypeInfer.ExpressionLambda lambda ->
+            resultAndThen2
+                (\parameter0 parameter1Up ->
+                    Result.map
+                        (\result ->
+                            GrainExpressionLambda
+                                { parameter0 =
+                                    { pattern = parameter0.pattern
+                                    , type_ = parameter0.type_
+                                    }
+                                , parameter1Up =
+                                    parameter1Up
+                                        |> List.map
+                                            (\grainParameter ->
+                                                { pattern = grainParameter.pattern
+                                                , type_ = grainParameter.type_
+                                                }
+                                            )
                                 , result = result
                                 }
                         )
-                        (declaration0Node
-                            |> letDeclaration
-                                (context
-                                    |> expressionContextAddVariablesInScope
-                                        variablesForWholeLetIn
-                                )
-                        )
-                        (declaration1UpNode
-                            |> listMapAndCombineOk
-                                (\letDecl ->
-                                    letDecl
-                                        |> letDeclaration
-                                            (context
-                                                |> expressionContextAddVariablesInScope
-                                                    variablesForWholeLetIn
-                                            )
-                                )
-                        )
-                        (letIn.expression
+                        (lambda.result
                             |> expression
                                 (context
                                     |> expressionContextAddVariablesInScope
-                                        variablesForWholeLetIn
+                                        (FastSet.union
+                                            parameter0.introducedVariables
+                                            (parameter1Up
+                                                |> listMapToFastSetsAndUnify .introducedVariables
+                                            )
+                                        )
                                 )
                         )
+                )
+                (lambda.parameter0 |> typedPattern)
+                (lambda.parameter1Up
+                    |> listMapAndCombineOk
+                        (\parameter -> parameter |> typedPattern)
+                )
+
+        ElmSyntaxTypeInfer.ExpressionCaseOf caseOf ->
+            Result.map3
+                (\matched case0 case1Up ->
+                    GrainExpressionMatch
+                        { matched = matched
+                        , case0 = case0
+                        , case1Up = case1Up
+                        }
+                )
+                (caseOf.matchedExpression |> expression context)
+                (caseOf.case0 |> case_ context)
+                (caseOf.case1Up
+                    |> listMapAndCombineOk
+                        (\parameter ->
+                            parameter |> case_ context
+                        )
+                )
+
+        ElmSyntaxTypeInfer.ExpressionLetIn letIn ->
+            let
+                variablesForWholeLetIn : FastSet.Set String
+                variablesForWholeLetIn =
+                    (letIn.declaration0 :: letIn.declaration1Up)
+                        |> listMapToFastSetsAndUnify
+                            (\syntaxLetDeclarationAndRange ->
+                                case syntaxLetDeclarationAndRange.declaration of
+                                    ElmSyntaxTypeInfer.LetValueOrFunctionDeclaration syntaxLetValueOrFunction ->
+                                        FastSet.singleton
+                                            (syntaxLetValueOrFunction.name
+                                                |> variableNameDisambiguateFromGrainKeywords
+                                            )
+
+                                    ElmSyntaxTypeInfer.LetDestructuring syntaxLetDestructuring ->
+                                        syntaxLetDestructuring.pattern
+                                            |> patternBindings
+                                            |> listMapAndToFastSet
+                                                variableNameDisambiguateFromGrainKeywords
+                            )
+            in
+            Result.map3
+                (\declaration0 declaration1Up result ->
+                    GrainExpressionWithLetDeclarations
+                        { declaration0 = declaration0
+                        , declaration1Up = declaration1Up
+                        , result = result
+                        }
+                )
+                (letIn.declaration0.declaration
+                    |> letDeclaration
+                        (context
+                            |> expressionContextAddVariablesInScope
+                                variablesForWholeLetIn
+                        )
+                )
+                (letIn.declaration1Up
+                    |> listMapAndCombineOk
+                        (\letDecl ->
+                            letDecl.declaration
+                                |> letDeclaration
+                                    (context
+                                        |> expressionContextAddVariablesInScope
+                                            variablesForWholeLetIn
+                                    )
+                        )
+                )
+                (letIn.result
+                    |> expression
+                        (context
+                            |> expressionContextAddVariablesInScope
+                                variablesForWholeLetIn
+                        )
+                )
+
+
+inferredTypeExpandFunction :
+    ElmSyntaxTypeInfer.Type String
+    ->
+        { inputs : List (ElmSyntaxTypeInfer.Type String)
+        , output : ElmSyntaxTypeInfer.Type String
+        }
+inferredTypeExpandFunction inferredType =
+    case inferredType of
+        ElmSyntaxTypeInfer.TypeNotVariable (ElmSyntaxTypeInfer.TypeFunction typeFunction) ->
+            let
+                outputExpanded =
+                    typeFunction.output |> inferredTypeExpandFunction
+            in
+            { inputs = typeFunction.input :: outputExpanded.inputs
+            , output = outputExpanded.output
+            }
+
+        typeNotFunction ->
+            { inputs = [], output = typeNotFunction }
 
 
 grainExpressionVoid : GrainExpression
@@ -4441,53 +4721,58 @@ grainExpressionVoid =
 in the [pattern](https://dark.elm.dmy.fr/packages/stil4m/elm-syntax/latest/Elm-Syntax-Pattern)
 (like `a` and `b` in `( Just a, { b } )`)
 -}
-patternBindings : Elm.Syntax.Node.Node Elm.Syntax.Pattern.Pattern -> List String
-patternBindings (Elm.Syntax.Node.Node _ syntaxPattern) =
+patternBindings :
+    ElmSyntaxTypeInfer.TypedNode
+        (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String))
+        (ElmSyntaxTypeInfer.Type String)
+    -> List String
+patternBindings syntaxPattern =
     -- IGNORE TCO
-    case syntaxPattern of
-        Elm.Syntax.Pattern.VarPattern name ->
+    case syntaxPattern.value of
+        ElmSyntaxTypeInfer.PatternVariable name ->
             [ name ]
 
-        Elm.Syntax.Pattern.AsPattern afterAsPattern (Elm.Syntax.Node.Node _ name) ->
-            name :: (afterAsPattern |> patternBindings)
+        ElmSyntaxTypeInfer.PatternAs patternAs ->
+            patternAs.variable.value
+                :: (patternAs.pattern |> patternBindings)
 
-        Elm.Syntax.Pattern.ParenthesizedPattern inParens ->
+        ElmSyntaxTypeInfer.PatternParenthesized inParens ->
             inParens |> patternBindings
 
-        Elm.Syntax.Pattern.ListPattern patterns ->
-            patterns |> List.concatMap patternBindings
+        ElmSyntaxTypeInfer.PatternListExact elements ->
+            elements |> List.concatMap patternBindings
 
-        Elm.Syntax.Pattern.TuplePattern patterns ->
-            patterns |> List.concatMap patternBindings
+        ElmSyntaxTypeInfer.PatternTuple parts ->
+            (parts.part0 |> patternBindings)
+                ++ (parts.part1 |> patternBindings)
 
-        Elm.Syntax.Pattern.RecordPattern fields ->
-            fields |> List.map Elm.Syntax.Node.value
+        ElmSyntaxTypeInfer.PatternTriple parts ->
+            (parts.part0 |> patternBindings)
+                ++ (parts.part1 |> patternBindings)
+                ++ (parts.part2 |> patternBindings)
 
-        Elm.Syntax.Pattern.NamedPattern _ patterns ->
-            patterns |> List.concatMap patternBindings
+        ElmSyntaxTypeInfer.PatternRecord fields ->
+            fields |> List.map .value
 
-        Elm.Syntax.Pattern.UnConsPattern headPattern tailPattern ->
-            (tailPattern |> patternBindings) ++ (headPattern |> patternBindings)
+        ElmSyntaxTypeInfer.PatternVariant patternVariant ->
+            patternVariant.values |> List.concatMap patternBindings
 
-        Elm.Syntax.Pattern.AllPattern ->
+        ElmSyntaxTypeInfer.PatternListCons listCons ->
+            (listCons.head |> patternBindings) ++ (listCons.head |> patternBindings)
+
+        ElmSyntaxTypeInfer.PatternIgnored ->
             []
 
-        Elm.Syntax.Pattern.UnitPattern ->
+        ElmSyntaxTypeInfer.PatternUnit ->
             []
 
-        Elm.Syntax.Pattern.CharPattern _ ->
+        ElmSyntaxTypeInfer.PatternChar _ ->
             []
 
-        Elm.Syntax.Pattern.StringPattern _ ->
+        ElmSyntaxTypeInfer.PatternString _ ->
             []
 
-        Elm.Syntax.Pattern.IntPattern _ ->
-            []
-
-        Elm.Syntax.Pattern.HexPattern _ ->
-            []
-
-        Elm.Syntax.Pattern.FloatPattern _ ->
+        ElmSyntaxTypeInfer.PatternInt _ ->
             []
 
 
@@ -4558,7 +4843,7 @@ condenseExpressionCall call =
                 }
 
         GrainExpressionLambda calledLambda ->
-            case ( calledLambda.parameter0, calledLambda.result ) of
+            case ( calledLambda.parameter0.pattern, calledLambda.result ) of
                 ( GrainPatternVariable "generated_record", GrainExpressionRecordAccess recordAccess ) ->
                     case call.argument1Up of
                         [] ->
@@ -4661,21 +4946,34 @@ case_ :
             }
     , variablesFromWithinDeclarationInScope : FastSet.Set String
     }
-    -> Elm.Syntax.Expression.Case
+    ->
+        { pattern :
+            ElmSyntaxTypeInfer.TypedNode
+                (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String))
+                (ElmSyntaxTypeInfer.Type String)
+        , result :
+            ElmSyntaxTypeInfer.TypedNode
+                (ElmSyntaxTypeInfer.Expression (ElmSyntaxTypeInfer.Type String))
+                (ElmSyntaxTypeInfer.Type String)
+        }
     ->
         Result
             String
-            { pattern : GrainPattern, result : GrainExpression }
-case_ context ( patternNode, resultNode ) =
+            { pattern : GrainPattern
+            , patternType : GrainType
+            , result : GrainExpression
+            }
+case_ context syntaxCase =
     Result.andThen
         (\casePattern ->
             Result.map
                 (\result ->
                     { pattern = casePattern.pattern
+                    , patternType = casePattern.type_
                     , result = result
                     }
                 )
-                (resultNode
+                (syntaxCase.result
                     |> expression
                         (context
                             |> expressionContextAddVariablesInScope
@@ -4683,13 +4981,7 @@ case_ context ( patternNode, resultNode ) =
                         )
                 )
         )
-        (patternNode
-            |> pattern
-                { valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup =
-                    context.valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup
-                , variantLookup = context.variantLookup
-                }
-        )
+        (syntaxCase.pattern |> typedPattern)
 
 
 letDeclaration :
@@ -4705,28 +4997,23 @@ letDeclaration :
             }
     , variablesFromWithinDeclarationInScope : FastSet.Set String
     }
-    -> Elm.Syntax.Node.Node Elm.Syntax.Expression.LetDeclaration
+    -> ElmSyntaxTypeInfer.LetDeclaration (ElmSyntaxTypeInfer.Type String)
     -> Result String GrainLetDeclaration
-letDeclaration context (Elm.Syntax.Node.Node _ syntaxLetDeclaration) =
+letDeclaration context syntaxLetDeclaration =
     case syntaxLetDeclaration of
-        Elm.Syntax.Expression.LetDestructuring destructuringPatternNode destructuringExpressionNode ->
+        ElmSyntaxTypeInfer.LetDestructuring letDestructuring ->
             Result.map2
                 (\destructuringPattern destructuringExpression ->
                     GrainLetDestructuring
                         { pattern = destructuringPattern.pattern
+                        , patternType = destructuringPattern.type_
                         , expression = destructuringExpression
                         }
                 )
-                (destructuringPatternNode
-                    |> pattern
-                        { valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup =
-                            context.valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup
-                        , variantLookup = context.variantLookup
-                        }
-                )
-                (destructuringExpressionNode |> expression context)
+                (letDestructuring.pattern |> typedPattern)
+                (letDestructuring.expression |> expression context)
 
-        Elm.Syntax.Expression.LetFunction letValueOrFunction ->
+        ElmSyntaxTypeInfer.LetValueOrFunctionDeclaration letValueOrFunction ->
             Result.map
                 GrainLetDeclarationValueOrFunction
                 (letValueOrFunction
@@ -4747,27 +5034,34 @@ letValueOrFunctionDeclaration :
             }
     , variablesFromWithinDeclarationInScope : FastSet.Set String
     }
-    -> Elm.Syntax.Expression.Function
+    ->
+        { signature :
+            Maybe
+                { range : Elm.Syntax.Range.Range
+                , nameRange : Elm.Syntax.Range.Range
+                , annotationType : Elm.Syntax.TypeAnnotation.TypeAnnotation
+                , annotationTypeRange : Elm.Syntax.Range.Range
+                }
+        , nameRange : Elm.Syntax.Range.Range
+        , name : String
+        , parameters : List (ElmSyntaxTypeInfer.TypedNode (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String)) (ElmSyntaxTypeInfer.Type String))
+        , result : ElmSyntaxTypeInfer.TypedNode (ElmSyntaxTypeInfer.Expression (ElmSyntaxTypeInfer.Type String)) (ElmSyntaxTypeInfer.Type String)
+        , type_ : ElmSyntaxTypeInfer.Type String
+        }
     ->
         Result
             String
             { name : String
             , result : GrainExpression
-            , type_ : Maybe GrainType
+            , type_ : GrainType
             }
-letValueOrFunctionDeclaration context syntaxDeclarationValueOrFunction =
-    let
-        implementation : Elm.Syntax.Expression.FunctionImplementation
-        implementation =
-            syntaxDeclarationValueOrFunction.declaration |> Elm.Syntax.Node.value
-    in
+letValueOrFunctionDeclaration context syntaxLetDeclarationValueOrFunction =
     resultAndThen2
         (\parameters maybeType ->
             Result.map
                 (\result ->
                     { name =
-                        implementation.name
-                            |> Elm.Syntax.Node.value
+                        syntaxLetDeclarationValueOrFunction.name
                             |> variableNameDisambiguateFromGrainKeywords
                     , type_ = maybeType
                     , result =
@@ -4777,13 +5071,23 @@ letValueOrFunctionDeclaration context syntaxDeclarationValueOrFunction =
 
                             parameter0 :: parameter1Up ->
                                 GrainExpressionLambda
-                                    { parameter0 = parameter0.pattern
-                                    , parameter1Up = parameter1Up |> List.map .pattern
+                                    { parameter0 =
+                                        { pattern = parameter0.pattern
+                                        , type_ = parameter0.type_
+                                        }
+                                    , parameter1Up =
+                                        parameter1Up
+                                            |> List.map
+                                                (\parameter ->
+                                                    { pattern = parameter.pattern
+                                                    , type_ = parameter.type_
+                                                    }
+                                                )
                                     , result = result
                                     }
                     }
                 )
-                (implementation.expression
+                (syntaxLetDeclarationValueOrFunction.result
                     |> expression
                         { valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup =
                             context.valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup
@@ -4798,31 +5102,11 @@ letValueOrFunctionDeclaration context syntaxDeclarationValueOrFunction =
                         }
                 )
         )
-        (implementation.arguments
+        (syntaxLetDeclarationValueOrFunction.parameters
             |> listMapAndCombineOk
-                (\p ->
-                    p
-                        |> pattern
-                            { valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup =
-                                context.valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup
-                            , variantLookup = context.variantLookup
-                            }
-                )
+                (\p -> p |> typedPattern)
         )
-        (case syntaxDeclarationValueOrFunction.signature of
-            Nothing ->
-                Ok Nothing
-
-            Just (Elm.Syntax.Node.Node _ signature) ->
-                Result.map Just
-                    (signature.typeAnnotation
-                        |> type_
-                            { valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup =
-                                context.valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup
-                            , variantLookup = context.variantLookup
-                            }
-                    )
-        )
+        (syntaxLetDeclarationValueOrFunction.type_ |> type_)
 
 
 expressionOperatorToGrainFunctionReference :
@@ -4887,35 +5171,30 @@ expressionOperatorToGrainFunctionReference operatorSymbol =
 printGrainValueOrFunctionDeclaration :
     { name : String
     , result : GrainExpression
-    , type_ : Maybe GrainType
+    , type_ : GrainType
     }
     -> Print
 printGrainValueOrFunctionDeclaration grainValueOrFunctionDeclaration =
     Print.exactly grainValueOrFunctionDeclaration.name
         |> Print.followedBy
             (Print.withIndentAtNextMultipleOf4
-                ((case grainValueOrFunctionDeclaration.type_ of
-                    Nothing ->
-                        Print.empty
+                ((let
+                    typePrint : Print
+                    typePrint =
+                        printGrainTypeNotParenthesized grainValueOrFunctionDeclaration.type_
 
-                    Just declaredType ->
-                        let
-                            typePrint : Print
-                            typePrint =
-                                printGrainTypeNotParenthesized declaredType
-
-                            fullLineSpread : Print.LineSpread
-                            fullLineSpread =
-                                typePrint |> Print.lineSpread
-                        in
-                        Print.exactly ":"
+                    fullLineSpread : Print.LineSpread
+                    fullLineSpread =
+                        typePrint |> Print.lineSpread
+                  in
+                  Print.exactly ":"
+                    |> Print.followedBy
+                        (Print.spaceOrLinebreakIndented fullLineSpread
                             |> Print.followedBy
-                                (Print.spaceOrLinebreakIndented fullLineSpread
-                                    |> Print.followedBy
-                                        (Print.withIndentAtNextMultipleOf4
-                                            typePrint
-                                        )
+                                (Print.withIndentAtNextMultipleOf4
+                                    typePrint
                                 )
+                        )
                  )
                     |> Print.followedBy
                         (Print.exactly " =")
@@ -4939,7 +5218,7 @@ grainValueOrFunctionDeclarationsGroupByDependencies :
     List
         { name : String
         , result : GrainExpression
-        , type_ : Maybe GrainType
+        , type_ : GrainType
         }
     ->
         { mostToLeastDependedOn :
@@ -4947,7 +5226,7 @@ grainValueOrFunctionDeclarationsGroupByDependencies :
                 (GrainValueOrFunctionDependencyBucket
                     { name : String
                     , result : GrainExpression
-                    , type_ : Maybe GrainType
+                    , type_ : GrainType
                     }
                 )
         }
@@ -4958,7 +5237,7 @@ grainValueOrFunctionDeclarationsGroupByDependencies grainValueOrFunctionDeclarat
                 (Data.Graph.SCC
                     { name : String
                     , result : GrainExpression
-                    , type_ : Maybe GrainType
+                    , type_ : GrainType
                     }
                 )
         ordered =
@@ -5487,8 +5766,8 @@ printGrainPatternParenthesizedIfSpaceSeparated grainPattern =
 
 
 printGrainExpressionLambda :
-    { parameter0 : GrainPattern
-    , parameter1Up : List GrainPattern
+    { parameter0 : { pattern : GrainPattern, type_ : GrainType }
+    , parameter1Up : List { pattern : GrainPattern, type_ : GrainType }
     , result : GrainExpression
     }
     -> Print
@@ -5497,7 +5776,25 @@ printGrainExpressionLambda syntaxLambda =
         |> Print.followedBy
             ((syntaxLambda.parameter0 :: syntaxLambda.parameter1Up)
                 |> Print.listMapAndIntersperseAndFlatten
-                    printGrainPatternParenthesizedIfSpaceSeparated
+                    (\parameter ->
+                        let
+                            parameterTypePrint : Print
+                            parameterTypePrint =
+                                printGrainTypeParenthesizedIfSpaceSeparated
+                                    parameter.type_
+                        in
+                        parameter.pattern
+                            |> printGrainPatternParenthesizedIfSpaceSeparated
+                            |> Print.followedBy (Print.exactly " :")
+                            |> Print.followedBy
+                                (Print.spaceOrLinebreakIndented
+                                    (parameterTypePrint |> Print.lineSpread)
+                                )
+                            |> Print.followedBy
+                                (Print.withIndentAtNextMultipleOf4
+                                    parameterTypePrint
+                                )
+                    )
                     (Print.exactly ", ")
             )
         |> Print.followedBy (Print.exactly ") =>")
@@ -5564,8 +5861,17 @@ printGrainExpressionIfElse syntaxIfElse =
 
 printGrainExpressionMatch :
     { matched : GrainExpression
-    , case0 : { pattern : GrainPattern, result : GrainExpression }
-    , case1Up : List { pattern : GrainPattern, result : GrainExpression }
+    , case0 :
+        { pattern : GrainPattern
+        , patternType : GrainType
+        , result : GrainExpression
+        }
+    , case1Up :
+        List
+            { pattern : GrainPattern
+            , patternType : GrainType
+            , result : GrainExpression
+            }
     }
     -> Print
 printGrainExpressionMatch matchWith =
@@ -5614,6 +5920,7 @@ printGrainExpressionWithLetDeclarations syntaxLetIn =
         letDestructurings :
             List
                 { pattern : GrainPattern
+                , patternType : GrainType
                 , expression : GrainExpression
                 }
         letDestructurings =
@@ -5632,7 +5939,7 @@ printGrainExpressionWithLetDeclarations syntaxLetIn =
             List
                 { name : String
                 , result : GrainExpression
-                , type_ : Maybe GrainType
+                , type_ : GrainType
                 }
         letValueOrFunctions =
             (syntaxLetIn.declaration0 :: syntaxLetIn.declaration1Up)
@@ -5719,7 +6026,11 @@ printGrainExpressionWithLetDeclarations syntaxLetIn =
 
 
 grainLetDeclarationsInsertGrainLetDestructurings :
-    List { pattern : GrainPattern, expression : GrainExpression }
+    List
+        { pattern : GrainPattern
+        , patternType : GrainType
+        , expression : GrainExpression
+        }
     ->
         { mostToLeastDependedOn :
             List (GrainValueOrFunctionDependencyBucket GrainLetDeclaration)
@@ -5740,7 +6051,10 @@ grainLetDeclarationsInsertGrainLetDestructurings grainLetDestructuringsToInsert 
 
 
 grainLetDeclarationsInsertGrainLetDestructuring :
-    { pattern : GrainPattern, expression : GrainExpression }
+    { pattern : GrainPattern
+    , patternType : GrainType
+    , expression : GrainExpression
+    }
     ->
         { mostToLeastDependedOn :
             List (GrainValueOrFunctionDependencyBucket GrainLetDeclaration)
@@ -5909,9 +6223,18 @@ grainPatternContainedVariables grainPattern =
 
 
 printGrainLetDestructuring :
-    { pattern : GrainPattern, expression : GrainExpression }
+    { pattern : GrainPattern
+    , patternType : GrainType
+    , expression : GrainExpression
+    }
     -> Print
 printGrainLetDestructuring letDestructuring =
+    let
+        patternTypePrint : Print
+        patternTypePrint =
+            letDestructuring.patternType
+                |> printGrainTypeParenthesizedIfSpaceSeparated
+    in
     printGrainPatternParenthesizedIfSpaceSeparated letDestructuring.pattern
         |> Print.followedBy (Print.exactly " =")
         |> Print.followedBy
@@ -5921,22 +6244,47 @@ printGrainLetDestructuring letDestructuring =
                         (printGrainExpressionNotParenthesized letDestructuring.expression)
                 )
             )
+        |> Print.followedBy
+            (Print.exactly " :")
+        |> Print.followedBy
+            (Print.withIndentAtNextMultipleOf4 patternTypePrint)
+        |> Print.followedBy
+            (Print.spaceOrLinebreakIndented
+                (patternTypePrint |> Print.lineSpread)
+            )
 
 
 printGrainExpressionMatchCase :
-    { pattern : GrainPattern, result : GrainExpression }
+    { pattern : GrainPattern
+    , patternType : GrainType
+    , result : GrainExpression
+    }
     -> Print
 printGrainExpressionMatchCase branch =
     let
         patternPrint : Print
         patternPrint =
             printGrainPatternNotParenthesized branch.pattern
+
+        patternTypePrint : Print
+        patternTypePrint =
+            printGrainTypeParenthesizedIfSpaceSeparated
+                branch.patternType
     in
     Print.withIndentIncreasedBy 2
         patternPrint
         |> Print.followedBy
             (Print.spaceOrLinebreakIndented
                 (patternPrint |> Print.lineSpread)
+            )
+        |> Print.followedBy (Print.exactly " :")
+        |> Print.followedBy
+            (Print.withIndentAtNextMultipleOf4
+                patternTypePrint
+            )
+        |> Print.followedBy
+            (Print.spaceOrLinebreakIndented
+                (patternTypePrint |> Print.lineSpread)
             )
         |> Print.followedBy (Print.exactly "=>")
         |> Print.followedBy
@@ -5961,7 +6309,7 @@ grainDeclarationsToModuleString :
             String
             { parameters : List GrainPattern
             , result : GrainExpression
-            , type_ : Maybe GrainType
+            , type_ : GrainType
             }
     , typeAliases :
         FastDict.Dict
@@ -5986,7 +6334,7 @@ grainDeclarationsToModuleString grainDeclarations =
                     (GrainValueOrFunctionDependencyBucket
                         { name : String
                         , result : GrainExpression
-                        , type_ : Maybe GrainType
+                        , type_ : GrainType
                         }
                     )
             }
