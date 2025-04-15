@@ -33,7 +33,7 @@ import Print exposing (Print)
 import Unicode
 
 
-{-| The sub-set of F# type syntax used in generated code
+{-| The sub-set of grain type syntax used in generated code
 -}
 type GrainType
     = GrainTypeConstruct
@@ -53,7 +53,7 @@ type GrainType
         }
 
 
-{-| The sub-set of F# pattern syntax used in generated code
+{-| The sub-set of grain pattern syntax used in generated code
 -}
 type GrainPattern
     = GrainPatternIgnore
@@ -84,7 +84,7 @@ type GrainPattern
         }
 
 
-{-| The sub-set of F# expression syntax used in generated code
+{-| The sub-set of grain expression syntax used in generated code
 -}
 type GrainExpression
     = GrainExpressionFloat Float
@@ -3644,18 +3644,18 @@ modules syntaxDeclarationsIncludingOverwrittenOnes =
                                             , choiceTypes = otherModuleDeclaredTypes.choiceTypes
                                             }
                                         }
+                                    |> Result.map
+                                        (\declarationsInferred ->
+                                            { declarationsInferred = declarationsInferred
+                                            , module_ = syntaxModule
+                                            }
+                                        )
                                     |> Result.mapError
                                         (\error ->
                                             "In module "
                                                 ++ (moduleName |> String.join ".")
                                                 ++ " "
                                                 ++ error
-                                        )
-                                    |> Result.map
-                                        (\declarationsInferred ->
-                                            { declarationsInferred = declarationsInferred
-                                            , module_ = syntaxModule
-                                            }
                                         )
                     )
     in
@@ -4825,7 +4825,7 @@ valueOrFunctionDeclaration :
             , result : GrainExpression
             , type_ : GrainType
             }
-valueOrFunctionDeclaration moduleOriginLookup syntaxDeclarationValueOrFunction =
+valueOrFunctionDeclaration moduleContext syntaxDeclarationValueOrFunction =
     resultAndThen2
         (\parameters maybeType ->
             Result.map
@@ -4849,9 +4849,9 @@ valueOrFunctionDeclaration moduleOriginLookup syntaxDeclarationValueOrFunction =
                 (syntaxDeclarationValueOrFunction.result
                     |> expression
                         { valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup =
-                            moduleOriginLookup.valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup
+                            moduleContext.valueAndFunctionAndTypeAliasAndEnumTypeModuleOriginLookup
                         , variantLookup =
-                            moduleOriginLookup.variantLookup
+                            moduleContext.variantLookup
                         , variablesFromWithinDeclarationInScope =
                             parameters
                                 |> listMapToFastSetsAndUnify .introducedVariables
@@ -6334,8 +6334,8 @@ printGrainExpressionNotParenthesized grainExpression =
         GrainExpressionWithLetDeclarations expressionWithLetDeclarations ->
             printGrainExpressionWithLetDeclarations expressionWithLetDeclarations
 
-        GrainExpressionMatch syntaxWhenIs ->
-            printGrainExpressionMatch syntaxWhenIs
+        GrainExpressionMatch syntaxMatch ->
+            printGrainExpressionMatch syntaxMatch
 
         GrainExpressionLambda syntaxLambda ->
             printGrainExpressionLambda syntaxLambda
@@ -7125,7 +7125,7 @@ printGrainExpressionMatchCase branch =
 
 
 {-| Print value/function declarations into
-an F# module called `Elm` in the global namespace that exposes all members.
+an grain module called `Elm` in the global namespace that exposes all members.
 Will also add some internal wrapper declarations.
 -}
 grainDeclarationsToModuleString :
