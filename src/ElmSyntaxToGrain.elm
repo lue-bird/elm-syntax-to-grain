@@ -3570,7 +3570,12 @@ modules syntaxDeclarationsIncludingOverwrittenOnes =
                             String
                             { nameRange : Elm.Syntax.Range.Range
                             , documentation : Maybe { content : String, range : Elm.Syntax.Range.Range }
-                            , signature : Maybe { range : Elm.Syntax.Range.Range, nameRange : Elm.Syntax.Range.Range, annotationType : Elm.Syntax.TypeAnnotation.TypeAnnotation, annotationTypeRange : Elm.Syntax.Range.Range }
+                            , signature :
+                                Maybe
+                                    { range : Elm.Syntax.Range.Range
+                                    , nameRange : Elm.Syntax.Range.Range
+                                    , annotationTypeRange : Elm.Syntax.Range.Range
+                                    }
                             , parameters : List (ElmSyntaxTypeInfer.TypedNode (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String)) (ElmSyntaxTypeInfer.Type String))
                             , result : ElmSyntaxTypeInfer.TypedNode (ElmSyntaxTypeInfer.Expression (ElmSyntaxTypeInfer.Type String)) (ElmSyntaxTypeInfer.Type String)
                             , type_ : ElmSyntaxTypeInfer.Type String
@@ -3588,6 +3593,8 @@ modules syntaxDeclarationsIncludingOverwrittenOnes =
                                     |> Elm.Syntax.Node.value
                                     |> moduleHeaderName
                         in
+                        -- _ =
+                        --     Debug.log "inferring module" (moduleName |> String.join ".")
                         case syntaxModuleTypes.types |> FastDict.get moduleName of
                             Nothing ->
                                 Err "module types did not contain info about the module name"
@@ -3637,6 +3644,13 @@ modules syntaxDeclarationsIncludingOverwrittenOnes =
                                             , choiceTypes = otherModuleDeclaredTypes.choiceTypes
                                             }
                                         }
+                                    |> Result.mapError
+                                        (\error ->
+                                            "In module "
+                                                ++ (moduleName |> String.join ".")
+                                                ++ " "
+                                                ++ error
+                                        )
                                     |> Result.map
                                         (\declarationsInferred ->
                                             { declarationsInferred = declarationsInferred
@@ -3758,6 +3772,7 @@ modules syntaxDeclarationsIncludingOverwrittenOnes =
                                                         Just valueOrFunctionDeclarationInferred ->
                                                             case
                                                                 valueOrFunctionDeclarationInferred
+                                                                    |> valueOrFunctionDeclarationSetLocalToOrigin moduleName
                                                                     |> valueOrFunctionDeclaration createdModuleContext
                                                             of
                                                                 Ok grainValueOrFunctionDeclaration ->
@@ -3948,6 +3963,810 @@ modules syntaxDeclarationsIncludingOverwrittenOnes =
                 syntaxModuleTypes.errors
                     ++ grainDeclarationsWithoutExtraRecordTypeAliases.errors
             }
+
+
+valueOrFunctionDeclarationSetLocalToOrigin :
+    Elm.Syntax.ModuleName.ModuleName
+    ->
+        { nameRange : Elm.Syntax.Range.Range
+        , documentation : Maybe { content : String, range : Elm.Syntax.Range.Range }
+        , signature :
+            Maybe
+                { range : Elm.Syntax.Range.Range
+                , nameRange : Elm.Syntax.Range.Range
+                , annotationTypeRange : Elm.Syntax.Range.Range
+                }
+        , parameters :
+            List
+                (ElmSyntaxTypeInfer.TypedNode
+                    (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String))
+                    (ElmSyntaxTypeInfer.Type String)
+                )
+        , result :
+            ElmSyntaxTypeInfer.TypedNode
+                (ElmSyntaxTypeInfer.Expression (ElmSyntaxTypeInfer.Type String))
+                (ElmSyntaxTypeInfer.Type String)
+        , type_ : ElmSyntaxTypeInfer.Type String
+        }
+    ->
+        { nameRange : Elm.Syntax.Range.Range
+        , documentation : Maybe { content : String, range : Elm.Syntax.Range.Range }
+        , signature :
+            Maybe
+                { range : Elm.Syntax.Range.Range
+                , nameRange : Elm.Syntax.Range.Range
+                , annotationTypeRange : Elm.Syntax.Range.Range
+                }
+        , parameters :
+            List
+                (ElmSyntaxTypeInfer.TypedNode
+                    (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String))
+                    (ElmSyntaxTypeInfer.Type String)
+                )
+        , result :
+            ElmSyntaxTypeInfer.TypedNode
+                (ElmSyntaxTypeInfer.Expression (ElmSyntaxTypeInfer.Type String))
+                (ElmSyntaxTypeInfer.Type String)
+        , type_ : ElmSyntaxTypeInfer.Type String
+        }
+valueOrFunctionDeclarationSetLocalToOrigin moduleOrigin inferredValueOrFunctionDeclaration =
+    { nameRange = inferredValueOrFunctionDeclaration.nameRange
+    , documentation = inferredValueOrFunctionDeclaration.documentation
+    , signature = inferredValueOrFunctionDeclaration.signature
+    , parameters =
+        inferredValueOrFunctionDeclaration.parameters
+            |> List.map
+                (\parameter ->
+                    parameter
+                        |> patternTypedNodeSetLocalToOrigin moduleOrigin
+                )
+    , result =
+        inferredValueOrFunctionDeclaration.result
+            |> expressionTypedNodeSetLocalToOrigin
+                { localExpressionVariables =
+                    inferredValueOrFunctionDeclaration.parameters
+                        |> listMapToFastSetsAndUnify patternTypedNodeContainedVariables
+                }
+                moduleOrigin
+    , type_ =
+        inferredValueOrFunctionDeclaration.type_
+            |> typeSetLocalToOrigin moduleOrigin
+    }
+
+
+patternTypedNodeSetLocalToOrigin :
+    Elm.Syntax.ModuleName.ModuleName
+    ->
+        ElmSyntaxTypeInfer.TypedNode
+            (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type comparableVariable))
+            (ElmSyntaxTypeInfer.Type comparableVariable)
+    ->
+        ElmSyntaxTypeInfer.TypedNode
+            (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type comparableVariable))
+            (ElmSyntaxTypeInfer.Type comparableVariable)
+patternTypedNodeSetLocalToOrigin moduleOrigin patternTypedNode =
+    { range = patternTypedNode.range
+    , type_ =
+        patternTypedNode.type_
+            |> typeSetLocalToOrigin moduleOrigin
+    , value =
+        patternTypedNode.value
+            |> patternSetLocalToOrigin moduleOrigin
+    }
+
+
+patternSetLocalToOrigin :
+    Elm.Syntax.ModuleName.ModuleName
+    -> ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type comparableVariable)
+    -> ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type comparableVariable)
+patternSetLocalToOrigin moduleOrigin patternInferred =
+    case patternInferred of
+        ElmSyntaxTypeInfer.PatternIgnored ->
+            ElmSyntaxTypeInfer.PatternIgnored
+
+        ElmSyntaxTypeInfer.PatternUnit ->
+            ElmSyntaxTypeInfer.PatternUnit
+
+        ElmSyntaxTypeInfer.PatternChar char ->
+            ElmSyntaxTypeInfer.PatternChar char
+
+        ElmSyntaxTypeInfer.PatternString string ->
+            ElmSyntaxTypeInfer.PatternString string
+
+        ElmSyntaxTypeInfer.PatternInt int ->
+            ElmSyntaxTypeInfer.PatternInt int
+
+        ElmSyntaxTypeInfer.PatternVariable variable ->
+            ElmSyntaxTypeInfer.PatternVariable variable
+
+        ElmSyntaxTypeInfer.PatternParenthesized inParens ->
+            ElmSyntaxTypeInfer.PatternParenthesized
+                (inParens
+                    |> patternTypedNodeSetLocalToOrigin moduleOrigin
+                )
+
+        ElmSyntaxTypeInfer.PatternAs patternAs ->
+            ElmSyntaxTypeInfer.PatternAs
+                { variable =
+                    { range = patternAs.variable.range
+                    , value = patternAs.variable.value
+                    , type_ =
+                        patternAs.variable.type_
+                            |> typeSetLocalToOrigin moduleOrigin
+                    }
+                , pattern =
+                    patternAs.pattern
+                        |> patternTypedNodeSetLocalToOrigin moduleOrigin
+                }
+
+        ElmSyntaxTypeInfer.PatternListCons listCons ->
+            ElmSyntaxTypeInfer.PatternListCons
+                { head =
+                    listCons.head
+                        |> patternTypedNodeSetLocalToOrigin moduleOrigin
+                , tail =
+                    listCons.tail
+                        |> patternTypedNodeSetLocalToOrigin moduleOrigin
+                }
+
+        ElmSyntaxTypeInfer.PatternTuple parts ->
+            ElmSyntaxTypeInfer.PatternTuple
+                { part0 =
+                    parts.part0
+                        |> patternTypedNodeSetLocalToOrigin moduleOrigin
+                , part1 =
+                    parts.part1
+                        |> patternTypedNodeSetLocalToOrigin moduleOrigin
+                }
+
+        ElmSyntaxTypeInfer.PatternTriple parts ->
+            ElmSyntaxTypeInfer.PatternTriple
+                { part0 =
+                    parts.part0
+                        |> patternTypedNodeSetLocalToOrigin moduleOrigin
+                , part1 =
+                    parts.part1
+                        |> patternTypedNodeSetLocalToOrigin moduleOrigin
+                , part2 =
+                    parts.part2
+                        |> patternTypedNodeSetLocalToOrigin moduleOrigin
+                }
+
+        ElmSyntaxTypeInfer.PatternRecord fields ->
+            ElmSyntaxTypeInfer.PatternRecord
+                (fields
+                    |> List.map
+                        (\field ->
+                            { range = field.range
+                            , value = field.value
+                            , type_ =
+                                field.type_
+                                    |> typeSetLocalToOrigin moduleOrigin
+                            }
+                        )
+                )
+
+        ElmSyntaxTypeInfer.PatternListExact elements ->
+            ElmSyntaxTypeInfer.PatternListExact
+                (elements
+                    |> List.map
+                        (\element ->
+                            element
+                                |> patternTypedNodeSetLocalToOrigin moduleOrigin
+                        )
+                )
+
+        ElmSyntaxTypeInfer.PatternVariant patternVariant ->
+            ElmSyntaxTypeInfer.PatternVariant
+                { name = patternVariant.name
+                , qualification = patternVariant.qualification
+                , moduleOrigin =
+                    case patternVariant.moduleOrigin of
+                        moduleOriginPart0 :: moduleOriginPart1Up ->
+                            moduleOriginPart0 :: moduleOriginPart1Up
+
+                        [] ->
+                            moduleOrigin
+                , values =
+                    patternVariant.values
+                        |> List.map
+                            (\value ->
+                                value
+                                    |> patternTypedNodeSetLocalToOrigin moduleOrigin
+                            )
+                }
+
+
+expressionTypedNodeSetLocalToOrigin :
+    { localExpressionVariables : FastSet.Set String }
+    -> Elm.Syntax.ModuleName.ModuleName
+    ->
+        ElmSyntaxTypeInfer.TypedNode
+            (ElmSyntaxTypeInfer.Expression (ElmSyntaxTypeInfer.Type comparableVariable))
+            (ElmSyntaxTypeInfer.Type comparableVariable)
+    ->
+        ElmSyntaxTypeInfer.TypedNode
+            (ElmSyntaxTypeInfer.Expression (ElmSyntaxTypeInfer.Type comparableVariable))
+            (ElmSyntaxTypeInfer.Type comparableVariable)
+expressionTypedNodeSetLocalToOrigin context moduleOrigin expressionTypedNode =
+    { range = expressionTypedNode.range
+    , type_ = expressionTypedNode.type_ |> typeSetLocalToOrigin moduleOrigin
+    , value =
+        expressionTypedNode.value
+            |> expressionSetLocalToOrigin context moduleOrigin
+    }
+
+
+expressionSetLocalToOrigin :
+    { localExpressionVariables : FastSet.Set String }
+    -> Elm.Syntax.ModuleName.ModuleName
+    -> ElmSyntaxTypeInfer.Expression (ElmSyntaxTypeInfer.Type comparableVariable)
+    -> ElmSyntaxTypeInfer.Expression (ElmSyntaxTypeInfer.Type comparableVariable)
+expressionSetLocalToOrigin context moduleOrigin inferredExpression =
+    case inferredExpression of
+        ElmSyntaxTypeInfer.ExpressionUnit ->
+            ElmSyntaxTypeInfer.ExpressionUnit
+
+        ElmSyntaxTypeInfer.ExpressionInteger integer ->
+            ElmSyntaxTypeInfer.ExpressionInteger integer
+
+        ElmSyntaxTypeInfer.ExpressionFloat float ->
+            ElmSyntaxTypeInfer.ExpressionFloat float
+
+        ElmSyntaxTypeInfer.ExpressionString string ->
+            ElmSyntaxTypeInfer.ExpressionString string
+
+        ElmSyntaxTypeInfer.ExpressionChar char ->
+            ElmSyntaxTypeInfer.ExpressionChar char
+
+        ElmSyntaxTypeInfer.ExpressionReference reference ->
+            ElmSyntaxTypeInfer.ExpressionReference
+                (case reference.moduleOrigin of
+                    [] ->
+                        if context.localExpressionVariables |> FastSet.member reference.name then
+                            reference
+
+                        else
+                            { name = reference.name
+                            , qualification = reference.qualification
+                            , moduleOrigin = moduleOrigin
+                            }
+
+                    _ :: _ ->
+                        reference
+                )
+
+        ElmSyntaxTypeInfer.ExpressionOperatorFunction operatorFunction ->
+            ElmSyntaxTypeInfer.ExpressionOperatorFunction operatorFunction
+
+        ElmSyntaxTypeInfer.ExpressionRecordAccessFunction recordAccessFunction ->
+            ElmSyntaxTypeInfer.ExpressionRecordAccessFunction recordAccessFunction
+
+        ElmSyntaxTypeInfer.ExpressionNegation negated ->
+            ElmSyntaxTypeInfer.ExpressionNegation
+                (negated
+                    |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                )
+
+        ElmSyntaxTypeInfer.ExpressionParenthesized inParens ->
+            ElmSyntaxTypeInfer.ExpressionParenthesized
+                (inParens
+                    |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                )
+
+        ElmSyntaxTypeInfer.ExpressionTuple parts ->
+            ElmSyntaxTypeInfer.ExpressionTuple
+                { part0 =
+                    parts.part0
+                        |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                , part1 =
+                    parts.part1
+                        |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                }
+
+        ElmSyntaxTypeInfer.ExpressionTriple parts ->
+            ElmSyntaxTypeInfer.ExpressionTriple
+                { part0 =
+                    parts.part0
+                        |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                , part1 =
+                    parts.part1
+                        |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                , part2 =
+                    parts.part2
+                        |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                }
+
+        ElmSyntaxTypeInfer.ExpressionRecordAccess recordAccess ->
+            ElmSyntaxTypeInfer.ExpressionRecordAccess
+                { record =
+                    recordAccess.record
+                        |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                , fieldNameRange = recordAccess.fieldNameRange
+                , fieldName = recordAccess.fieldName
+                }
+
+        ElmSyntaxTypeInfer.ExpressionInfixOperation infixOperation ->
+            ElmSyntaxTypeInfer.ExpressionInfixOperation
+                { symbol = infixOperation.symbol
+                , left =
+                    infixOperation.left
+                        |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                , right =
+                    infixOperation.right
+                        |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                }
+
+        ElmSyntaxTypeInfer.ExpressionIfThenElse ifThenElse ->
+            ElmSyntaxTypeInfer.ExpressionIfThenElse
+                { condition =
+                    ifThenElse.condition
+                        |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                , onTrue =
+                    ifThenElse.onTrue
+                        |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                , onFalse =
+                    ifThenElse.onFalse
+                        |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                }
+
+        ElmSyntaxTypeInfer.ExpressionList elements ->
+            ElmSyntaxTypeInfer.ExpressionList
+                (elements
+                    |> List.map
+                        (\element ->
+                            element |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                        )
+                )
+
+        ElmSyntaxTypeInfer.ExpressionCall call ->
+            ElmSyntaxTypeInfer.ExpressionCall
+                { called =
+                    call.called
+                        |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                , argument0 =
+                    call.argument0
+                        |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                , argument1Up =
+                    call.argument1Up
+                        |> List.map
+                            (\element ->
+                                element |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                            )
+                }
+
+        ElmSyntaxTypeInfer.ExpressionRecord fields ->
+            ElmSyntaxTypeInfer.ExpressionRecord
+                (fields
+                    |> List.map
+                        (\field ->
+                            { range = field.range
+                            , nameRange = field.nameRange
+                            , name = field.name
+                            , value =
+                                field.value
+                                    |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                            }
+                        )
+                )
+
+        ElmSyntaxTypeInfer.ExpressionRecordUpdate recordUpdate ->
+            ElmSyntaxTypeInfer.ExpressionRecordUpdate
+                { recordVariable =
+                    { range = recordUpdate.recordVariable.range
+                    , type_ =
+                        recordUpdate.recordVariable.type_
+                            |> typeSetLocalToOrigin moduleOrigin
+                    , value =
+                        recordUpdate.recordVariable.value
+                            |> (\reference ->
+                                    case reference.moduleOrigin of
+                                        [] ->
+                                            if context.localExpressionVariables |> FastSet.member reference.name then
+                                                reference
+
+                                            else
+                                                { name = reference.name
+                                                , moduleOrigin = moduleOrigin
+                                                }
+
+                                        _ :: _ ->
+                                            reference
+                               )
+                    }
+                , field0 =
+                    recordUpdate.field0
+                        |> (\field ->
+                                { range = field.range
+                                , nameRange = field.nameRange
+                                , name = field.name
+                                , value =
+                                    field.value
+                                        |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                                }
+                           )
+                , field1Up =
+                    recordUpdate.field1Up
+                        |> List.map
+                            (\field ->
+                                { range = field.range
+                                , nameRange = field.nameRange
+                                , name = field.name
+                                , value =
+                                    field.value
+                                        |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
+                                }
+                            )
+                }
+
+        ElmSyntaxTypeInfer.ExpressionLambda lambda ->
+            let
+                introducedParameterPatternVariables : FastSet.Set String
+                introducedParameterPatternVariables =
+                    (lambda.parameter0 :: lambda.parameter1Up)
+                        |> listMapToFastSetsAndUnify
+                            patternTypedNodeContainedVariables
+            in
+            ElmSyntaxTypeInfer.ExpressionLambda
+                { parameter0 =
+                    lambda.parameter0
+                        |> patternTypedNodeSetLocalToOrigin moduleOrigin
+                , parameter1Up =
+                    lambda.parameter1Up
+                        |> List.map
+                            (\parameter ->
+                                parameter
+                                    |> patternTypedNodeSetLocalToOrigin moduleOrigin
+                            )
+                , result =
+                    lambda.result
+                        |> expressionTypedNodeSetLocalToOrigin
+                            { localExpressionVariables =
+                                FastSet.union
+                                    context.localExpressionVariables
+                                    introducedParameterPatternVariables
+                            }
+                            moduleOrigin
+                }
+
+        ElmSyntaxTypeInfer.ExpressionLetIn letIn ->
+            let
+                introducedExpressionVariablesAcrossLetIn : FastSet.Set String
+                introducedExpressionVariablesAcrossLetIn =
+                    (letIn.declaration0 :: letIn.declaration1Up)
+                        |> listMapToFastSetsAndUnify
+                            (\inferredLetDeclaration ->
+                                case inferredLetDeclaration.declaration of
+                                    ElmSyntaxTypeInfer.LetDestructuring letDestructuring ->
+                                        letDestructuring.pattern
+                                            |> patternTypedNodeContainedVariables
+
+                                    ElmSyntaxTypeInfer.LetValueOrFunctionDeclaration letValueOrFunction ->
+                                        FastSet.insert letValueOrFunction.name
+                                            (letValueOrFunction.parameters
+                                                |> listMapToFastSetsAndUnify
+                                                    patternTypedNodeContainedVariables
+                                            )
+                            )
+
+                newContext : { localExpressionVariables : FastSet.Set String }
+                newContext =
+                    { localExpressionVariables =
+                        FastSet.union context.localExpressionVariables
+                            introducedExpressionVariablesAcrossLetIn
+                    }
+            in
+            ElmSyntaxTypeInfer.ExpressionLetIn
+                { declaration0 =
+                    letIn.declaration0
+                        |> (\inferredLetDeclaration ->
+                                { range = inferredLetDeclaration.range
+                                , declaration =
+                                    inferredLetDeclaration.declaration
+                                        |> letDeclarationSetLocalToOrigin newContext
+                                            moduleOrigin
+                                }
+                           )
+                , declaration1Up =
+                    letIn.declaration1Up
+                        |> List.map
+                            (\inferredLetDeclaration ->
+                                { range = inferredLetDeclaration.range
+                                , declaration =
+                                    inferredLetDeclaration.declaration
+                                        |> letDeclarationSetLocalToOrigin newContext
+                                            moduleOrigin
+                                }
+                            )
+                , result =
+                    letIn.result
+                        |> expressionTypedNodeSetLocalToOrigin newContext
+                            moduleOrigin
+                }
+
+        ElmSyntaxTypeInfer.ExpressionCaseOf caseOf ->
+            ElmSyntaxTypeInfer.ExpressionCaseOf
+                { matchedExpression =
+                    caseOf.matchedExpression
+                        |> expressionTypedNodeSetLocalToOrigin
+                            context
+                            moduleOrigin
+                , case0 =
+                    caseOf.case0
+                        |> (\caseInferred ->
+                                { pattern =
+                                    caseInferred.pattern
+                                        |> patternTypedNodeSetLocalToOrigin moduleOrigin
+                                , result =
+                                    caseInferred.result
+                                        |> expressionTypedNodeSetLocalToOrigin
+                                            { localExpressionVariables =
+                                                FastSet.union
+                                                    context.localExpressionVariables
+                                                    (caseInferred.pattern
+                                                        |> patternTypedNodeContainedVariables
+                                                    )
+                                            }
+                                            moduleOrigin
+                                }
+                           )
+                , case1Up =
+                    caseOf.case1Up
+                        |> List.map
+                            (\caseInferred ->
+                                { pattern =
+                                    caseInferred.pattern
+                                        |> patternTypedNodeSetLocalToOrigin moduleOrigin
+                                , result =
+                                    caseInferred.result
+                                        |> expressionTypedNodeSetLocalToOrigin
+                                            { localExpressionVariables =
+                                                FastSet.union
+                                                    context.localExpressionVariables
+                                                    (caseInferred.pattern
+                                                        |> patternTypedNodeContainedVariables
+                                                    )
+                                            }
+                                            moduleOrigin
+                                }
+                            )
+                }
+
+
+letDeclarationSetLocalToOrigin :
+    { localExpressionVariables : FastSet.Set String }
+    -> Elm.Syntax.ModuleName.ModuleName
+    -> ElmSyntaxTypeInfer.LetDeclaration (ElmSyntaxTypeInfer.Type comparableVariable)
+    -> ElmSyntaxTypeInfer.LetDeclaration (ElmSyntaxTypeInfer.Type comparableVariable)
+letDeclarationSetLocalToOrigin context moduleOrigin inferredLetDeclaration =
+    case inferredLetDeclaration of
+        ElmSyntaxTypeInfer.LetDestructuring letDestructuring ->
+            ElmSyntaxTypeInfer.LetDestructuring
+                { pattern =
+                    letDestructuring.pattern
+                        |> patternTypedNodeSetLocalToOrigin moduleOrigin
+                , expression =
+                    letDestructuring.expression
+                        |> expressionTypedNodeSetLocalToOrigin context
+                            moduleOrigin
+                }
+
+        ElmSyntaxTypeInfer.LetValueOrFunctionDeclaration letValueOrFunction ->
+            ElmSyntaxTypeInfer.LetValueOrFunctionDeclaration
+                { signature = letValueOrFunction.signature
+                , nameRange = letValueOrFunction.nameRange
+                , name = letValueOrFunction.name
+                , parameters =
+                    letValueOrFunction.parameters
+                        |> List.map
+                            (\parameter ->
+                                parameter
+                                    |> patternTypedNodeSetLocalToOrigin moduleOrigin
+                            )
+                , result =
+                    letValueOrFunction.result
+                        |> expressionTypedNodeSetLocalToOrigin context
+                            moduleOrigin
+                , type_ = letValueOrFunction.type_ |> typeSetLocalToOrigin moduleOrigin
+                }
+
+
+patternTypedNodeContainedVariables :
+    ElmSyntaxTypeInfer.TypedNode
+        (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type comparableTypeVariable))
+        (ElmSyntaxTypeInfer.Type comparableTypeVariable)
+    -> FastSet.Set String
+patternTypedNodeContainedVariables patternTypedNode =
+    patternTypedNode.value
+        |> patternContainedVariables
+
+
+patternContainedVariables :
+    ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type comparableTypeVariable)
+    -> FastSet.Set String
+patternContainedVariables inferredPattern =
+    case inferredPattern of
+        ElmSyntaxTypeInfer.PatternIgnored ->
+            FastSet.empty
+
+        ElmSyntaxTypeInfer.PatternUnit ->
+            FastSet.empty
+
+        ElmSyntaxTypeInfer.PatternChar _ ->
+            FastSet.empty
+
+        ElmSyntaxTypeInfer.PatternString _ ->
+            FastSet.empty
+
+        ElmSyntaxTypeInfer.PatternInt _ ->
+            FastSet.empty
+
+        ElmSyntaxTypeInfer.PatternVariable variable ->
+            FastSet.singleton variable
+
+        ElmSyntaxTypeInfer.PatternParenthesized inParens ->
+            patternTypedNodeContainedVariables
+                inParens
+
+        ElmSyntaxTypeInfer.PatternAs patternAs ->
+            FastSet.insert patternAs.variable.value
+                (patternAs.pattern
+                    |> patternTypedNodeContainedVariables
+                )
+
+        ElmSyntaxTypeInfer.PatternTuple parts ->
+            FastSet.union
+                (parts.part0
+                    |> patternTypedNodeContainedVariables
+                )
+                (parts.part1
+                    |> patternTypedNodeContainedVariables
+                )
+
+        ElmSyntaxTypeInfer.PatternTriple parts ->
+            FastSet.union
+                (parts.part0
+                    |> patternTypedNodeContainedVariables
+                )
+                (FastSet.union
+                    (parts.part1
+                        |> patternTypedNodeContainedVariables
+                    )
+                    (parts.part2
+                        |> patternTypedNodeContainedVariables
+                    )
+                )
+
+        ElmSyntaxTypeInfer.PatternListCons patternListCons ->
+            FastSet.union
+                (patternListCons.head
+                    |> patternTypedNodeContainedVariables
+                )
+                (patternListCons.tail
+                    |> patternTypedNodeContainedVariables
+                )
+
+        ElmSyntaxTypeInfer.PatternListExact elements ->
+            elements
+                |> listMapToFastSetsAndUnify
+                    (\element ->
+                        element
+                            |> patternTypedNodeContainedVariables
+                    )
+
+        ElmSyntaxTypeInfer.PatternVariant patternVariant ->
+            patternVariant.values
+                |> listMapToFastSetsAndUnify
+                    (\value ->
+                        value
+                            |> patternTypedNodeContainedVariables
+                    )
+
+        ElmSyntaxTypeInfer.PatternRecord fields ->
+            fields
+                |> List.foldl
+                    (\fieldTypedNode soFar ->
+                        soFar |> FastSet.insert fieldTypedNode.value
+                    )
+                    FastSet.empty
+
+
+typeSetLocalToOrigin :
+    Elm.Syntax.ModuleName.ModuleName
+    -> ElmSyntaxTypeInfer.Type variable
+    -> ElmSyntaxTypeInfer.Type variable
+typeSetLocalToOrigin moduleOrigin inferredType =
+    case inferredType of
+        ElmSyntaxTypeInfer.TypeVariable variable ->
+            ElmSyntaxTypeInfer.TypeVariable variable
+
+        ElmSyntaxTypeInfer.TypeNotVariable typeNotVariable ->
+            ElmSyntaxTypeInfer.TypeNotVariable
+                (typeNotVariableSetLocalToOrigin moduleOrigin typeNotVariable)
+
+
+typeNotVariableSetLocalToOrigin :
+    Elm.Syntax.ModuleName.ModuleName
+    -> ElmSyntaxTypeInfer.TypeNotVariable variable
+    -> ElmSyntaxTypeInfer.TypeNotVariable variable
+typeNotVariableSetLocalToOrigin moduleOrigin typeNotVariable =
+    case typeNotVariable of
+        ElmSyntaxTypeInfer.TypeConstruct typeConstruct ->
+            ElmSyntaxTypeInfer.TypeConstruct
+                { name = typeConstruct.name
+                , moduleOrigin =
+                    case typeConstruct.moduleOrigin of
+                        [] ->
+                            moduleOrigin
+
+                        moduleOriginPart0 :: moduleOriginPart1Up ->
+                            moduleOriginPart0 :: moduleOriginPart1Up
+                , arguments =
+                    typeConstruct.arguments
+                        |> List.map
+                            (\argument ->
+                                argument
+                                    |> typeSetLocalToOrigin moduleOrigin
+                            )
+                }
+
+        ElmSyntaxTypeInfer.TypeUnit ->
+            ElmSyntaxTypeInfer.TypeUnit
+
+        ElmSyntaxTypeInfer.TypeFunction parts ->
+            ElmSyntaxTypeInfer.TypeFunction
+                { input =
+                    parts.input
+                        |> typeSetLocalToOrigin moduleOrigin
+                , output =
+                    parts.output
+                        |> typeSetLocalToOrigin moduleOrigin
+                }
+
+        ElmSyntaxTypeInfer.TypeTuple parts ->
+            ElmSyntaxTypeInfer.TypeTuple
+                { part0 =
+                    parts.part0
+                        |> typeSetLocalToOrigin moduleOrigin
+                , part1 =
+                    parts.part1
+                        |> typeSetLocalToOrigin moduleOrigin
+                }
+
+        ElmSyntaxTypeInfer.TypeTriple parts ->
+            ElmSyntaxTypeInfer.TypeTriple
+                { part0 =
+                    parts.part0
+                        |> typeSetLocalToOrigin moduleOrigin
+                , part1 =
+                    parts.part1
+                        |> typeSetLocalToOrigin moduleOrigin
+                , part2 =
+                    parts.part2
+                        |> typeSetLocalToOrigin moduleOrigin
+                }
+
+        ElmSyntaxTypeInfer.TypeRecord fields ->
+            ElmSyntaxTypeInfer.TypeRecord
+                (fields
+                    |> FastDict.map
+                        (\_ fieldValue ->
+                            fieldValue
+                                |> typeSetLocalToOrigin moduleOrigin
+                        )
+                )
+
+        ElmSyntaxTypeInfer.TypeRecordExtension typeRecordExtension ->
+            ElmSyntaxTypeInfer.TypeRecordExtension
+                { recordVariable = typeRecordExtension.recordVariable
+                , fields =
+                    typeRecordExtension.fields
+                        |> FastDict.map
+                            (\_ fieldValue ->
+                                fieldValue
+                                    |> typeSetLocalToOrigin moduleOrigin
+                            )
+                }
 
 
 fastDictMapToFastSetAndUnify :
@@ -5916,113 +6735,118 @@ printGrainExpressionWithLetDeclarations :
     }
     -> Print
 printGrainExpressionWithLetDeclarations syntaxLetIn =
-    let
-        letDestructurings :
-            List
-                { pattern : GrainPattern
-                , patternType : GrainType
-                , expression : GrainExpression
-                }
-        letDestructurings =
-            (syntaxLetIn.declaration0 :: syntaxLetIn.declaration1Up)
-                |> List.filterMap
-                    (\declaration ->
-                        case declaration of
-                            GrainLetDestructuring letDestructuring ->
-                                Just letDestructuring
+    printParenthesized
+        { opening = "{"
+        , closing = "}"
+        , inner =
+            let
+                letDestructurings :
+                    List
+                        { pattern : GrainPattern
+                        , patternType : GrainType
+                        , expression : GrainExpression
+                        }
+                letDestructurings =
+                    (syntaxLetIn.declaration0 :: syntaxLetIn.declaration1Up)
+                        |> List.filterMap
+                            (\declaration ->
+                                case declaration of
+                                    GrainLetDestructuring letDestructuring ->
+                                        Just letDestructuring
 
-                            GrainLetDeclarationValueOrFunction _ ->
-                                Nothing
-                    )
+                                    GrainLetDeclarationValueOrFunction _ ->
+                                        Nothing
+                            )
 
-        letValueOrFunctions :
-            List
-                { name : String
-                , result : GrainExpression
-                , type_ : GrainType
-                }
-        letValueOrFunctions =
-            (syntaxLetIn.declaration0 :: syntaxLetIn.declaration1Up)
-                |> List.filterMap
-                    (\declaration ->
-                        case declaration of
-                            GrainLetDeclarationValueOrFunction letValueOrFunction ->
-                                Just letValueOrFunction
+                letValueOrFunctions :
+                    List
+                        { name : String
+                        , result : GrainExpression
+                        , type_ : GrainType
+                        }
+                letValueOrFunctions =
+                    (syntaxLetIn.declaration0 :: syntaxLetIn.declaration1Up)
+                        |> List.filterMap
+                            (\declaration ->
+                                case declaration of
+                                    GrainLetDeclarationValueOrFunction letValueOrFunction ->
+                                        Just letValueOrFunction
 
-                            GrainLetDestructuring _ ->
-                                Nothing
-                    )
+                                    GrainLetDestructuring _ ->
+                                        Nothing
+                            )
 
-        ordered :
-            { mostToLeastDependedOn :
-                List (GrainValueOrFunctionDependencyBucket GrainLetDeclaration)
-            }
-        ordered =
-            { mostToLeastDependedOn =
-                letValueOrFunctions
-                    |> grainValueOrFunctionDeclarationsGroupByDependencies
-                    |> .mostToLeastDependedOn
-                    |> List.map
-                        (\grainValueOrFunctionDependencyBucket ->
-                            case grainValueOrFunctionDependencyBucket of
-                                GrainValueOrFunctionDependencySingle grainValueOrFunction ->
-                                    GrainValueOrFunctionDependencySingle
-                                        (GrainLetDeclarationValueOrFunction grainValueOrFunction)
+                ordered :
+                    { mostToLeastDependedOn :
+                        List (GrainValueOrFunctionDependencyBucket GrainLetDeclaration)
+                    }
+                ordered =
+                    { mostToLeastDependedOn =
+                        letValueOrFunctions
+                            |> grainValueOrFunctionDeclarationsGroupByDependencies
+                            |> .mostToLeastDependedOn
+                            |> List.map
+                                (\grainValueOrFunctionDependencyBucket ->
+                                    case grainValueOrFunctionDependencyBucket of
+                                        GrainValueOrFunctionDependencySingle grainValueOrFunction ->
+                                            GrainValueOrFunctionDependencySingle
+                                                (GrainLetDeclarationValueOrFunction grainValueOrFunction)
 
-                                GrainValueOrFunctionDependencyRecursiveBucket recursiveBucket ->
-                                    GrainValueOrFunctionDependencyRecursiveBucket
-                                        (recursiveBucket
-                                            |> List.map GrainLetDeclarationValueOrFunction
-                                        )
-                        )
-            }
-                |> grainLetDeclarationsInsertGrainLetDestructurings
-                    letDestructurings
-    in
-    (ordered.mostToLeastDependedOn
-        |> Print.listMapAndIntersperseAndFlatten
-            (\dependencyGroup ->
-                case dependencyGroup of
-                    GrainValueOrFunctionDependencySingle grainLetDeclaration ->
-                        case grainLetDeclaration of
-                            GrainLetDestructuring letDestructuring ->
-                                Print.exactly "let "
-                                    |> Print.followedBy
-                                        (letDestructuring |> printGrainLetDestructuring)
-                                    |> Print.followedBy Print.linebreakIndented
-                                    |> Print.followedBy Print.linebreakIndented
-
-                            GrainLetDeclarationValueOrFunction letValueOrFunction ->
-                                Print.exactly "let "
-                                    |> Print.followedBy
-                                        (letValueOrFunction |> printGrainValueOrFunctionDeclaration)
-                                    |> Print.followedBy Print.linebreakIndented
-                                    |> Print.followedBy Print.linebreakIndented
-
-                    GrainValueOrFunctionDependencyRecursiveBucket recursiveGroup ->
-                        Print.exactly "let "
-                            |> -- I would have thought let rec
-                               -- but the compiler disagrees
-                               Print.followedBy
-                                (recursiveGroup
-                                    |> Print.listMapAndIntersperseAndFlatten
-                                        (\grainLetDeclaration ->
-                                            case grainLetDeclaration of
-                                                GrainLetDestructuring letDestructuring ->
-                                                    (letDestructuring |> printGrainLetDestructuring)
-                                                        |> Print.followedBy Print.linebreakIndented
-
-                                                GrainLetDeclarationValueOrFunction letValueOrFunction ->
-                                                    (letValueOrFunction |> printGrainValueOrFunctionDeclaration)
-                                                        |> Print.followedBy Print.linebreakIndented
-                                        )
-                                        (Print.exactly "and ")
+                                        GrainValueOrFunctionDependencyRecursiveBucket recursiveBucket ->
+                                            GrainValueOrFunctionDependencyRecursiveBucket
+                                                (recursiveBucket
+                                                    |> List.map GrainLetDeclarationValueOrFunction
+                                                )
                                 )
+                    }
+                        |> grainLetDeclarationsInsertGrainLetDestructurings
+                            letDestructurings
+            in
+            (ordered.mostToLeastDependedOn
+                |> Print.listMapAndIntersperseAndFlatten
+                    (\dependencyGroup ->
+                        case dependencyGroup of
+                            GrainValueOrFunctionDependencySingle grainLetDeclaration ->
+                                case grainLetDeclaration of
+                                    GrainLetDestructuring letDestructuring ->
+                                        Print.exactly "let "
+                                            |> Print.followedBy
+                                                (letDestructuring |> printGrainLetDestructuring)
+                                            |> Print.followedBy Print.linebreakIndented
+                                            |> Print.followedBy Print.linebreakIndented
+
+                                    GrainLetDeclarationValueOrFunction letValueOrFunction ->
+                                        Print.exactly "let "
+                                            |> Print.followedBy
+                                                (letValueOrFunction |> printGrainValueOrFunctionDeclaration)
+                                            |> Print.followedBy Print.linebreakIndented
+                                            |> Print.followedBy Print.linebreakIndented
+
+                            GrainValueOrFunctionDependencyRecursiveBucket recursiveGroup ->
+                                Print.exactly "let "
+                                    |> -- I would have thought let rec
+                                       -- but the compiler disagrees
+                                       Print.followedBy
+                                        (recursiveGroup
+                                            |> Print.listMapAndIntersperseAndFlatten
+                                                (\grainLetDeclaration ->
+                                                    case grainLetDeclaration of
+                                                        GrainLetDestructuring letDestructuring ->
+                                                            (letDestructuring |> printGrainLetDestructuring)
+                                                                |> Print.followedBy Print.linebreakIndented
+
+                                                        GrainLetDeclarationValueOrFunction letValueOrFunction ->
+                                                            (letValueOrFunction |> printGrainValueOrFunctionDeclaration)
+                                                                |> Print.followedBy Print.linebreakIndented
+                                                )
+                                                (Print.exactly "and ")
+                                        )
+                    )
+                    Print.empty
             )
-            Print.empty
-    )
-        |> Print.followedBy
-            (printGrainExpressionNotParenthesized syntaxLetIn.result)
+                |> Print.followedBy
+                    (printGrainExpressionNotParenthesized syntaxLetIn.result)
+        }
 
 
 grainLetDeclarationsInsertGrainLetDestructurings :
@@ -6271,22 +7095,23 @@ printGrainExpressionMatchCase branch =
             printGrainTypeParenthesizedIfSpaceSeparated
                 branch.patternType
     in
-    Print.withIndentIncreasedBy 2
-        patternPrint
-        |> Print.followedBy
-            (Print.spaceOrLinebreakIndented
-                (patternPrint |> Print.lineSpread)
-            )
-        |> Print.followedBy (Print.exactly " :")
-        |> Print.followedBy
-            (Print.withIndentAtNextMultipleOf4
-                patternTypePrint
-            )
-        |> Print.followedBy
-            (Print.spaceOrLinebreakIndented
-                (patternTypePrint |> Print.lineSpread)
-            )
-        |> Print.followedBy (Print.exactly "=>")
+    printParenthesized
+        { opening = "("
+        , closing = ")"
+        , inner =
+            Print.withIndentIncreasedBy 2
+                patternPrint
+                |> Print.followedBy
+                    (Print.spaceOrLinebreakIndented
+                        (patternPrint |> Print.lineSpread)
+                    )
+                |> Print.followedBy (Print.exactly " :")
+                |> Print.followedBy
+                    (Print.withIndentAtNextMultipleOf4
+                        patternTypePrint
+                    )
+        }
+        |> Print.followedBy (Print.exactly " =>")
         |> Print.followedBy
             (Print.withIndentAtNextMultipleOf4
                 (Print.linebreakIndented
