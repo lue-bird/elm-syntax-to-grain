@@ -4025,7 +4025,7 @@ valueOrFunctionDeclarationSetLocalToOrigin moduleOrigin inferredValueOrFunctionD
             |> expressionTypedNodeSetLocalToOrigin
                 { localExpressionVariables =
                     inferredValueOrFunctionDeclaration.parameters
-                        |> listMapToFastSetsAndUnify patternTypedNodeContainedVariables
+                        |> listMapToFastSetsAndUnify patternTypedNodeIntroducedVariables
                 }
                 moduleOrigin
     , type_ =
@@ -4288,7 +4288,13 @@ expressionSetLocalToOrigin context moduleOrigin inferredExpression =
 
         ElmSyntaxTypeInfer.ExpressionInfixOperation infixOperation ->
             ElmSyntaxTypeInfer.ExpressionInfixOperation
-                { symbol = infixOperation.symbol
+                { operator =
+                    { symbol = infixOperation.operator.symbol
+                    , moduleOrigin = infixOperation.operator.moduleOrigin
+                    , type_ =
+                        infixOperation.operator.type_
+                            |> typeSetLocalToOrigin moduleOrigin
+                    }
                 , left =
                     infixOperation.left
                         |> expressionTypedNodeSetLocalToOrigin context moduleOrigin
@@ -4405,7 +4411,7 @@ expressionSetLocalToOrigin context moduleOrigin inferredExpression =
                 introducedParameterPatternVariables =
                     (lambda.parameter0 :: lambda.parameter1Up)
                         |> listMapToFastSetsAndUnify
-                            patternTypedNodeContainedVariables
+                            patternTypedNodeIntroducedVariables
             in
             ElmSyntaxTypeInfer.ExpressionLambda
                 { parameter0 =
@@ -4439,13 +4445,13 @@ expressionSetLocalToOrigin context moduleOrigin inferredExpression =
                                 case inferredLetDeclaration.declaration of
                                     ElmSyntaxTypeInfer.LetDestructuring letDestructuring ->
                                         letDestructuring.pattern
-                                            |> patternTypedNodeContainedVariables
+                                            |> patternTypedNodeIntroducedVariables
 
                                     ElmSyntaxTypeInfer.LetValueOrFunctionDeclaration letValueOrFunction ->
                                         FastSet.insert letValueOrFunction.name
                                             (letValueOrFunction.parameters
                                                 |> listMapToFastSetsAndUnify
-                                                    patternTypedNodeContainedVariables
+                                                    patternTypedNodeIntroducedVariables
                                             )
                             )
 
@@ -4504,7 +4510,7 @@ expressionSetLocalToOrigin context moduleOrigin inferredExpression =
                                                 FastSet.union
                                                     context.localExpressionVariables
                                                     (caseInferred.pattern
-                                                        |> patternTypedNodeContainedVariables
+                                                        |> patternTypedNodeIntroducedVariables
                                                     )
                                             }
                                             moduleOrigin
@@ -4524,7 +4530,7 @@ expressionSetLocalToOrigin context moduleOrigin inferredExpression =
                                                 FastSet.union
                                                     context.localExpressionVariables
                                                     (caseInferred.pattern
-                                                        |> patternTypedNodeContainedVariables
+                                                        |> patternTypedNodeIntroducedVariables
                                                     )
                                             }
                                             moduleOrigin
@@ -4571,20 +4577,20 @@ letDeclarationSetLocalToOrigin context moduleOrigin inferredLetDeclaration =
                 }
 
 
-patternTypedNodeContainedVariables :
+patternTypedNodeIntroducedVariables :
     ElmSyntaxTypeInfer.TypedNode
         (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type comparableTypeVariable))
         (ElmSyntaxTypeInfer.Type comparableTypeVariable)
     -> FastSet.Set String
-patternTypedNodeContainedVariables patternTypedNode =
+patternTypedNodeIntroducedVariables patternTypedNode =
     patternTypedNode.value
-        |> patternContainedVariables
+        |> patternIntroducedVariables
 
 
-patternContainedVariables :
+patternIntroducedVariables :
     ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type comparableTypeVariable)
     -> FastSet.Set String
-patternContainedVariables inferredPattern =
+patternIntroducedVariables inferredPattern =
     case inferredPattern of
         ElmSyntaxTypeInfer.PatternIgnored ->
             FastSet.empty
@@ -4605,45 +4611,45 @@ patternContainedVariables inferredPattern =
             FastSet.singleton variable
 
         ElmSyntaxTypeInfer.PatternParenthesized inParens ->
-            patternTypedNodeContainedVariables
+            patternTypedNodeIntroducedVariables
                 inParens
 
         ElmSyntaxTypeInfer.PatternAs patternAs ->
             FastSet.insert patternAs.variable.value
                 (patternAs.pattern
-                    |> patternTypedNodeContainedVariables
+                    |> patternTypedNodeIntroducedVariables
                 )
 
         ElmSyntaxTypeInfer.PatternTuple parts ->
             FastSet.union
                 (parts.part0
-                    |> patternTypedNodeContainedVariables
+                    |> patternTypedNodeIntroducedVariables
                 )
                 (parts.part1
-                    |> patternTypedNodeContainedVariables
+                    |> patternTypedNodeIntroducedVariables
                 )
 
         ElmSyntaxTypeInfer.PatternTriple parts ->
             FastSet.union
                 (parts.part0
-                    |> patternTypedNodeContainedVariables
+                    |> patternTypedNodeIntroducedVariables
                 )
                 (FastSet.union
                     (parts.part1
-                        |> patternTypedNodeContainedVariables
+                        |> patternTypedNodeIntroducedVariables
                     )
                     (parts.part2
-                        |> patternTypedNodeContainedVariables
+                        |> patternTypedNodeIntroducedVariables
                     )
                 )
 
         ElmSyntaxTypeInfer.PatternListCons patternListCons ->
             FastSet.union
                 (patternListCons.head
-                    |> patternTypedNodeContainedVariables
+                    |> patternTypedNodeIntroducedVariables
                 )
                 (patternListCons.tail
-                    |> patternTypedNodeContainedVariables
+                    |> patternTypedNodeIntroducedVariables
                 )
 
         ElmSyntaxTypeInfer.PatternListExact elements ->
@@ -4651,7 +4657,7 @@ patternContainedVariables inferredPattern =
                 |> listMapToFastSetsAndUnify
                     (\element ->
                         element
-                            |> patternTypedNodeContainedVariables
+                            |> patternTypedNodeIntroducedVariables
                     )
 
         ElmSyntaxTypeInfer.PatternVariant patternVariant ->
@@ -4659,7 +4665,7 @@ patternContainedVariables inferredPattern =
                 |> listMapToFastSetsAndUnify
                     (\value ->
                         value
-                            |> patternTypedNodeContainedVariables
+                            |> patternTypedNodeIntroducedVariables
                     )
 
         ElmSyntaxTypeInfer.PatternRecord fields ->
@@ -5032,12 +5038,12 @@ expression context expressionTypedNode =
                 _ ->
                     Err "record access function has an inferred type that wasn't a function"
 
-        ElmSyntaxTypeInfer.ExpressionOperatorFunction operatorSymbol ->
+        ElmSyntaxTypeInfer.ExpressionOperatorFunction operator ->
             Result.map
                 (\operationFunctionReference ->
                     GrainExpressionReference operationFunctionReference
                 )
-                (expressionOperatorToGrainFunctionReference operatorSymbol)
+                (expressionOperatorToGrainFunctionReference operator)
 
         ElmSyntaxTypeInfer.ExpressionCall call ->
             Result.map3
@@ -5056,7 +5062,7 @@ expression context expressionTypedNode =
                 )
 
         ElmSyntaxTypeInfer.ExpressionInfixOperation infixOperation ->
-            case infixOperation.symbol of
+            case infixOperation.operator.symbol of
                 "|>" ->
                     Result.map2
                         (\argument called ->
@@ -5122,7 +5128,11 @@ expression context expressionTypedNode =
                                 , argument1Up = [ right ]
                                 }
                         )
-                        (expressionOperatorToGrainFunctionReference otherOperatorSymbol)
+                        (expressionOperatorToGrainFunctionReference
+                            { symbol = otherOperatorSymbol
+                            , moduleOrigin = infixOperation.operator.moduleOrigin
+                            }
+                        )
                         (infixOperation.left |> expression context)
                         (infixOperation.right |> expression context)
 
@@ -5929,10 +5939,10 @@ letValueOrFunctionDeclaration context syntaxLetDeclarationValueOrFunction =
 
 
 expressionOperatorToGrainFunctionReference :
-    String
+    { symbol : String, moduleOrigin : Elm.Syntax.ModuleName.ModuleName }
     -> Result String { moduleOrigin : Maybe String, name : String }
 expressionOperatorToGrainFunctionReference operatorSymbol =
-    case operatorSymbol of
+    case operatorSymbol.symbol of
         "+" ->
             Ok { moduleOrigin = Nothing, name = "basics_add" }
 
