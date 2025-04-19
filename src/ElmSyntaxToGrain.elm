@@ -5204,10 +5204,7 @@ expression context expressionTypedNode =
                                 Ok [] ->
                                     Ok (GrainExpressionReference grainReference)
 
-                                Ok [ _ ] ->
-                                    Ok (GrainExpressionReference grainReference)
-
-                                Ok (valueType0 :: valueType1 :: valueType2Up) ->
+                                Ok (valueType0 :: valueType2Up) ->
                                     let
                                         generatedValueVariableReference : Int -> GrainExpression
                                         generatedValueVariableReference valueIndex =
@@ -5232,7 +5229,7 @@ expression context expressionTypedNode =
                                                 , type_ = valueType0
                                                 }
                                             , parameter1Up =
-                                                (valueType1 :: valueType2Up)
+                                                valueType2Up
                                                     |> List.indexedMap
                                                         (\i valueType ->
                                                             { pattern = generatedValueTypedPattern (i + 1)
@@ -5245,7 +5242,7 @@ expression context expressionTypedNode =
                                                     , argument0 =
                                                         generatedValueVariableReference 0
                                                     , argument1Up =
-                                                        (valueType1 :: valueType2Up)
+                                                        valueType2Up
                                                             |> List.indexedMap
                                                                 (\i _ -> generatedValueVariableReference (i + 1))
                                                     }
