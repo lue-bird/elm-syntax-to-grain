@@ -2630,6 +2630,9 @@ referenceToCoreGrain reference =
                 "fromCode" ->
                     Just { moduleOrigin = Nothing, name = "char_fromCode" }
 
+                "char_isHexDigit" ->
+                    Just { moduleOrigin = Nothing, name = "char_isHexDigit" }
+
                 "toLower" ->
                     Just { moduleOrigin = Just "Char.Ascii", name = "toLowercase" }
 
@@ -5006,13 +5009,13 @@ expression context expressionTypedNode =
         ElmSyntaxTypeInfer.ExpressionRecordAccessFunction fieldName ->
             case expressionTypedNode.type_ of
                 ElmSyntaxTypeInfer.TypeNotVariable (ElmSyntaxTypeInfer.TypeFunction typeFunction) ->
-                    let
-                        recordVariableName : String
-                        recordVariableName =
-                            "generated_record"
-                    in
                     Result.map
                         (\recordVariableGrainType ->
+                            let
+                                recordVariableName : String
+                                recordVariableName =
+                                    "generated_record"
+                            in
                             GrainExpressionLambda
                                 { parameter0 =
                                     { pattern = GrainPatternVariable recordVariableName
@@ -5033,7 +5036,7 @@ expression context expressionTypedNode =
                                         }
                                 }
                         )
-                        (typeFunction.output |> type_)
+                        (typeFunction.input |> type_)
 
                 _ ->
                     Err "record access function has an inferred type that wasn't a function"
@@ -5091,8 +5094,14 @@ expression context expressionTypedNode =
                     Result.map2
                         (\left right ->
                             if
-                                (left |> grainExpressionIsDefinitelyOfTypeString)
-                                    || (right |> grainExpressionIsDefinitelyOfTypeString)
+                                infixOperation.left.type_
+                                    == ElmSyntaxTypeInfer.TypeNotVariable
+                                        (ElmSyntaxTypeInfer.TypeConstruct
+                                            { moduleOrigin = [ "String" ]
+                                            , name = "String"
+                                            , arguments = []
+                                            }
+                                        )
                             then
                                 GrainExpressionCall
                                     { called =
@@ -5169,7 +5178,7 @@ expression context expressionTypedNode =
                         )
 
                 Nothing ->
-                    case context.variantLookup |> FastDict.get ( reference.moduleOrigin, reference.name ) of
+                    case context.variantLookup |> FastDict.get ( reference.qualification, reference.name ) of
                         Just _ ->
                             let
                                 grainReference : { moduleOrigin : Maybe String, name : String }
@@ -5527,6 +5536,10 @@ inferredTypeExpandFunction inferredType =
     case inferredType of
         ElmSyntaxTypeInfer.TypeNotVariable (ElmSyntaxTypeInfer.TypeFunction typeFunction) ->
             let
+                outputExpanded :
+                    { inputs : List (ElmSyntaxTypeInfer.Type String)
+                    , output : ElmSyntaxTypeInfer.Type String
+                    }
                 outputExpanded =
                     typeFunction.output |> inferredTypeExpandFunction
             in
@@ -5712,54 +5725,6 @@ condenseExpressionCall call =
                 , argument0 = call.argument0
                 , argument1Up = call.argument1Up
                 }
-
-
-grainExpressionIsDefinitelyOfTypeString : GrainExpression -> Bool
-grainExpressionIsDefinitelyOfTypeString grainExpression =
-    case grainExpression of
-        GrainExpressionString _ ->
-            True
-
-        GrainExpressionCall call ->
-            call.called
-                == GrainExpressionReference { moduleOrigin = Just "String", name = "concat" }
-                && ((call.argument1Up |> List.length) == 1)
-
-        GrainExpressionChar _ ->
-            False
-
-        GrainExpressionFloat _ ->
-            False
-
-        GrainExpressionReference _ ->
-            False
-
-        GrainExpressionRecordAccess _ ->
-            False
-
-        GrainExpressionTuple _ ->
-            False
-
-        GrainExpressionIfElse _ ->
-            False
-
-        GrainExpressionList _ ->
-            False
-
-        GrainExpressionRecord _ ->
-            False
-
-        GrainExpressionRecordUpdate _ ->
-            False
-
-        GrainExpressionLambda _ ->
-            False
-
-        GrainExpressionMatch _ ->
-            False
-
-        GrainExpressionWithLetDeclarations _ ->
-            False
 
 
 case_ :
@@ -7431,6 +7396,12 @@ let char_fromCode: Number => Char = charCode =>
   } else {
     Char.fromCode(0)
   }
+let char_isHexDigit: Char => Bool = char => {
+  let code = Char.code(char)
+  0x30 <= code && code <= 0x39
+    || 0x41 <= code && code <= 0x46
+    || 0x61 <= code && code <= 0x66
+}
 
 let list_singleton: a => List<a> = onlyElement => [onlyElement]
 let list_cons: ( a, List<a> ) => List<a> = ( newHead, tail ) =>
