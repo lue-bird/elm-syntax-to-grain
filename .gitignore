@@ -16,6 +16,7 @@ elm.gr
 _build
 target
 *.wasm
+*.gro
 
 # Editors
 .idea/
