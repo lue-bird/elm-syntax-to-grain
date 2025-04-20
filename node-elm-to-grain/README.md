@@ -27,7 +27,11 @@ The default, packaged compiler
 
 Here's the typical command you'd use to turn grain code into wasm
 ```bash
-grain compile --release --elide-type-info src/elm.gr
+grain compile --release --elide-type-info src/main.gr
+```
+and run with
+```bash
+grain run src/main.wasm
 ```
 
 For specifics, read [the grain CLI guide](https://grain-lang.org/docs/tooling/grain_cli).
