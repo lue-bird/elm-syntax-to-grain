@@ -10,7 +10,7 @@ let inputOrError = File.fdRead(File.stdin, size=1000_000)
 match (inputOrError) {
   Ok((inputBytes, _)) => {
     let input: String = Bytes.toString(inputBytes)
-    let formatted = Elm.string_concat([input])
+    let formatted = Elm.formatSingleModule_formatSingleModule(input)
     let writeResult = File.fdWrite(File.stdout, Bytes.fromString(formatted))
     match (writeResult) {
       Ok(_) => {
