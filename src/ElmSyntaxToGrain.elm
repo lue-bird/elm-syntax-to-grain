@@ -116,12 +116,10 @@ type GrainExpression
         }
     | GrainExpressionCall
         { called : GrainExpression
-        , argument0 : GrainExpression
-        , argument1Up : List GrainExpression
+        , arguments : List GrainExpression
         }
     | GrainExpressionLambda
-        { parameter0 : { pattern : GrainPattern, type_ : GrainType }
-        , parameter1Up : List { pattern : GrainPattern, type_ : GrainType }
+        { parameters : List { pattern : GrainPattern, type_ : GrainType }
         , result : GrainExpression
         }
     | GrainExpressionMatch
@@ -794,8 +792,8 @@ grainExpressionContainedLocalReferences syntaxExpression =
                 Nothing ->
                     FastSet.singleton reference.name
 
-        expressionNotRecord ->
-            expressionNotRecord
+        expressionNotReference ->
+            expressionNotReference
                 |> grainExpressionSubs
                 |> listMapToFastSetsAndUnify
                     grainExpressionContainedLocalReferences
@@ -808,8 +806,7 @@ grainExpressionSubs grainExpression =
     case grainExpression of
         GrainExpressionCall call ->
             call.called
-                :: call.argument0
-                :: call.argument1Up
+                :: call.arguments
 
         GrainExpressionList elements ->
             elements
@@ -1063,7 +1060,7 @@ printGrainTypeAliasDeclaration grainTypeAliasDeclaration =
 printGrainRecordTypeDeclaration : List String -> Print
 printGrainRecordTypeDeclaration grainRecordFields =
     Print.exactly
-        ("record "
+        ("provide record "
             ++ generatedGrainRecordTypeAliasName grainRecordFields
             ++ (grainRecordFields
                     |> grainTypeParametersToString
@@ -2998,8 +2995,7 @@ modules :
             { valuesAndFunctions :
                 FastDict.Dict
                     String
-                    { parameters : List GrainPattern
-                    , result : GrainExpression
+                    { result : GrainExpression
                     , type_ : GrainType
                     }
             , typeAliases :
@@ -3577,6 +3573,7 @@ modules syntaxDeclarationsIncludingOverwrittenOnes =
                                 Maybe
                                     { range : Elm.Syntax.Range.Range
                                     , nameRange : Elm.Syntax.Range.Range
+                                    , annotationType : Elm.Syntax.TypeAnnotation.TypeAnnotation
                                     , annotationTypeRange : Elm.Syntax.Range.Range
                                     }
                             , parameters : List (ElmSyntaxTypeInfer.TypedNode (ElmSyntaxTypeInfer.Pattern (ElmSyntaxTypeInfer.Type String)) (ElmSyntaxTypeInfer.Type String))
@@ -3681,8 +3678,7 @@ modules syntaxDeclarationsIncludingOverwrittenOnes =
                         { valuesAndFunctions :
                             FastDict.Dict
                                 String
-                                { parameters : List GrainPattern
-                                , result : GrainExpression
+                                { result : GrainExpression
                                 , type_ : GrainType
                                 }
                         , typeAliases :
@@ -3940,7 +3936,6 @@ modules syntaxDeclarationsIncludingOverwrittenOnes =
                         |> FastDict.map
                             (\_ valueOrFunctionInfo ->
                                 { type_ = valueOrFunctionInfo.type_
-                                , parameters = valueOrFunctionInfo.parameters
                                 , result = valueOrFunctionInfo.result
                                 }
                             )
@@ -3977,6 +3972,7 @@ valueOrFunctionDeclarationSetLocalToOrigin :
             Maybe
                 { range : Elm.Syntax.Range.Range
                 , nameRange : Elm.Syntax.Range.Range
+                , annotationType : Elm.Syntax.TypeAnnotation.TypeAnnotation
                 , annotationTypeRange : Elm.Syntax.Range.Range
                 }
         , parameters :
@@ -3998,6 +3994,7 @@ valueOrFunctionDeclarationSetLocalToOrigin :
             Maybe
                 { range : Elm.Syntax.Range.Range
                 , nameRange : Elm.Syntax.Range.Range
+                , annotationType : Elm.Syntax.TypeAnnotation.TypeAnnotation
                 , annotationTypeRange : Elm.Syntax.Range.Range
                 }
         , parameters :
@@ -4830,8 +4827,7 @@ valueOrFunctionDeclaration :
     ->
         Result
             String
-            { parameters : List GrainPattern
-            , result : GrainExpression
+            { result : GrainExpression
             , type_ : GrainType
             }
 valueOrFunctionDeclaration moduleContext syntaxDeclarationValueOrFunction =
@@ -4840,8 +4836,6 @@ valueOrFunctionDeclaration moduleContext syntaxDeclarationValueOrFunction =
             Result.map
                 (\result ->
                     { type_ = maybeType
-                    , -- TODO remove parameters
-                      parameters = []
                     , result =
                         case parameters |> List.map (\param -> { type_ = param.type_, pattern = param.pattern }) of
                             [] ->
@@ -4849,8 +4843,7 @@ valueOrFunctionDeclaration moduleContext syntaxDeclarationValueOrFunction =
 
                             parameter0 :: parameter1Up ->
                                 GrainExpressionLambda
-                                    { parameter0 = parameter0
-                                    , parameter1Up = parameter1Up
+                                    { parameters = parameter0 :: parameter1Up
                                     , result = result
                                     }
                     }
@@ -5017,11 +5010,11 @@ expression context expressionTypedNode =
                                     "generated_record"
                             in
                             GrainExpressionLambda
-                                { parameter0 =
-                                    { pattern = GrainPatternVariable recordVariableName
-                                    , type_ = recordVariableGrainType
-                                    }
-                                , parameter1Up = []
+                                { parameters =
+                                    [ { pattern = GrainPatternVariable recordVariableName
+                                      , type_ = recordVariableGrainType
+                                      }
+                                    ]
                                 , result =
                                     GrainExpressionRecordAccess
                                         { record =
@@ -5109,8 +5102,7 @@ expression context expressionTypedNode =
                                             { moduleOrigin = Just "String"
                                             , name = "concat"
                                             }
-                                    , argument0 = left
-                                    , argument1Up = [ right ]
+                                    , arguments = [ left, right ]
                                     }
 
                             else
@@ -5120,8 +5112,7 @@ expression context expressionTypedNode =
                                             { moduleOrigin = Just "List"
                                             , name = "append"
                                             }
-                                    , argument0 = left
-                                    , argument1Up = [ right ]
+                                    , arguments = [ left, right ]
                                     }
                         )
                         (infixOperation.left |> expression context)
@@ -5133,8 +5124,7 @@ expression context expressionTypedNode =
                             GrainExpressionCall
                                 { called =
                                     GrainExpressionReference operationFunctionReference
-                                , argument0 = left
-                                , argument1Up = [ right ]
+                                , arguments = [ left, right ]
                                 }
                         )
                         (expressionOperatorToGrainFunctionReference
@@ -5204,7 +5194,7 @@ expression context expressionTypedNode =
                                 Ok [] ->
                                     Ok (GrainExpressionReference grainReference)
 
-                                Ok (valueType0 :: valueType2Up) ->
+                                Ok (valueType0 :: valueType1Up) ->
                                     let
                                         generatedValueVariableReference : Int -> GrainExpression
                                         generatedValueVariableReference valueIndex =
@@ -5224,27 +5214,27 @@ expression context expressionTypedNode =
                                     in
                                     Ok
                                         (GrainExpressionLambda
-                                            { parameter0 =
+                                            { parameters =
                                                 { pattern = generatedValueTypedPattern 0
                                                 , type_ = valueType0
                                                 }
-                                            , parameter1Up =
-                                                valueType2Up
-                                                    |> List.indexedMap
-                                                        (\i valueType ->
-                                                            { pattern = generatedValueTypedPattern (i + 1)
-                                                            , type_ = valueType
-                                                            }
-                                                        )
+                                                    :: (valueType1Up
+                                                            |> List.indexedMap
+                                                                (\i valueType ->
+                                                                    { pattern = generatedValueTypedPattern (i + 1)
+                                                                    , type_ = valueType
+                                                                    }
+                                                                )
+                                                       )
                                             , result =
                                                 GrainExpressionCall
                                                     { called = GrainExpressionReference grainReference
-                                                    , argument0 =
+                                                    , arguments =
                                                         generatedValueVariableReference 0
-                                                    , argument1Up =
-                                                        valueType2Up
-                                                            |> List.indexedMap
-                                                                (\i _ -> generatedValueVariableReference (i + 1))
+                                                            :: (valueType1Up
+                                                                    |> List.indexedMap
+                                                                        (\i _ -> generatedValueVariableReference (i + 1))
+                                                               )
                                                     }
                                             }
                                         )
@@ -5302,8 +5292,7 @@ expression context expressionTypedNode =
                         { called =
                             GrainExpressionReference
                                 { moduleOrigin = Just "Number", name = "neg" }
-                        , argument0 = inNegation
-                        , argument1Up = []
+                        , arguments = [ inNegation ]
                         }
                 )
                 (inNegationNode |> expression context)
@@ -5415,18 +5404,18 @@ expression context expressionTypedNode =
                     Result.map
                         (\result ->
                             GrainExpressionLambda
-                                { parameter0 =
+                                { parameters =
                                     { pattern = parameter0.pattern
                                     , type_ = parameter0.type_
                                     }
-                                , parameter1Up =
-                                    parameter1Up
-                                        |> List.map
-                                            (\grainParameter ->
-                                                { pattern = grainParameter.pattern
-                                                , type_ = grainParameter.type_
-                                                }
-                                            )
+                                        :: (parameter1Up
+                                                |> List.map
+                                                    (\grainParameter ->
+                                                        { pattern = grainParameter.pattern
+                                                        , type_ = grainParameter.type_
+                                                        }
+                                                    )
+                                           )
                                 , result = result
                                 }
                         )
@@ -5673,17 +5662,25 @@ condenseExpressionCall :
 condenseExpressionCall call =
     case call.called of
         GrainExpressionCall calledCall ->
-            condenseExpressionCall
-                { called = calledCall.called
-                , argument0 = calledCall.argument0
-                , argument1Up =
-                    calledCall.argument1Up
-                        ++ (call.argument0 :: call.argument1Up)
-                }
+            case calledCall.arguments of
+                [] ->
+                    GrainExpressionCall
+                        { called = call.called
+                        , arguments = call.argument0 :: call.argument1Up
+                        }
+
+                calledCallArgument0 :: calledCallArgument1Up ->
+                    condenseExpressionCall
+                        { called = calledCall.called
+                        , argument0 = calledCallArgument0
+                        , argument1Up =
+                            calledCallArgument1Up
+                                ++ (call.argument0 :: call.argument1Up)
+                        }
 
         GrainExpressionLambda calledLambda ->
-            case ( calledLambda.parameter0.pattern, calledLambda.result ) of
-                ( GrainPatternVariable "generated_record", GrainExpressionRecordAccess recordAccess ) ->
+            case ( calledLambda.parameters |> List.map .pattern, calledLambda.result ) of
+                ( (GrainPatternVariable "generated_record") :: _, GrainExpressionRecordAccess recordAccess ) ->
                     case call.argument1Up of
                         [] ->
                             GrainExpressionRecordAccess
@@ -5698,29 +5695,25 @@ condenseExpressionCall call =
                                         { record = call.argument0
                                         , field = recordAccess.field
                                         }
-                                , argument0 = argument1
-                                , argument1Up = argument2Up
+                                , arguments = argument1 :: argument2Up
                                 }
 
-                ( GrainPatternVariable "generated_0", GrainExpressionCall variantCall ) ->
+                ( (GrainPatternVariable "generated_0") :: _, GrainExpressionCall variantCall ) ->
                     GrainExpressionCall
                         { called = variantCall.called
-                        , argument0 = call.argument0
-                        , argument1Up = call.argument1Up
+                        , arguments = call.argument0 :: call.argument1Up
                         }
 
                 _ ->
                     GrainExpressionCall
                         { called = GrainExpressionLambda calledLambda
-                        , argument0 = call.argument0
-                        , argument1Up = call.argument1Up
+                        , arguments = call.argument0 :: call.argument1Up
                         }
 
         calledNotCall ->
             GrainExpressionCall
                 { called = calledNotCall
-                , argument0 = call.argument0
-                , argument1Up = call.argument1Up
+                , arguments = call.argument0 :: call.argument1Up
                 }
 
 
@@ -5862,18 +5855,18 @@ letValueOrFunctionDeclaration context syntaxLetDeclarationValueOrFunction =
 
                             parameter0 :: parameter1Up ->
                                 GrainExpressionLambda
-                                    { parameter0 =
+                                    { parameters =
                                         { pattern = parameter0.pattern
                                         , type_ = parameter0.type_
                                         }
-                                    , parameter1Up =
-                                        parameter1Up
-                                            |> List.map
-                                                (\parameter ->
-                                                    { pattern = parameter.pattern
-                                                    , type_ = parameter.type_
-                                                    }
-                                                )
+                                            :: (parameter1Up
+                                                    |> List.map
+                                                        (\parameter ->
+                                                            { pattern = parameter.pattern
+                                                            , type_ = parameter.type_
+                                                            }
+                                                        )
+                                               )
                                     , result = result
                                     }
                     }
@@ -6384,8 +6377,7 @@ printGrainExpressionTuple parts =
 
 printGrainExpressionCall :
     { called : GrainExpression
-    , argument0 : GrainExpression
-    , argument1Up : List GrainExpression
+    , arguments : List GrainExpression
     }
     -> Print
 printGrainExpressionCall call =
@@ -6397,7 +6389,7 @@ printGrainExpressionCall call =
 
         argumentPrints : List Print
         argumentPrints =
-            (call.argument0 :: call.argument1Up)
+            call.arguments
                 |> List.map
                     -- I'm also surprised that grain requires extra parens here
                     printGrainExpressionParenthesizedIfSpaceSeparated
@@ -6557,15 +6549,14 @@ printGrainPatternParenthesizedIfSpaceSeparated grainPattern =
 
 
 printGrainExpressionLambda :
-    { parameter0 : { pattern : GrainPattern, type_ : GrainType }
-    , parameter1Up : List { pattern : GrainPattern, type_ : GrainType }
+    { parameters : List { pattern : GrainPattern, type_ : GrainType }
     , result : GrainExpression
     }
     -> Print
 printGrainExpressionLambda syntaxLambda =
     Print.exactly "("
         |> Print.followedBy
-            ((syntaxLambda.parameter0 :: syntaxLambda.parameter1Up)
+            (syntaxLambda.parameters
                 |> Print.listMapAndIntersperseAndFlatten
                     (\parameter ->
                         let
@@ -6576,7 +6567,7 @@ printGrainExpressionLambda syntaxLambda =
                         in
                         parameter.pattern
                             |> printGrainPatternParenthesizedIfSpaceSeparated
-                            |> Print.followedBy (Print.exactly " :")
+                            |> Print.followedBy (Print.exactly ":")
                             |> Print.followedBy
                                 (Print.spaceOrLinebreakIndented
                                     (parameterTypePrint |> Print.lineSpread)
@@ -6619,12 +6610,8 @@ printGrainExpressionIfElse syntaxIfElse =
     Print.exactly "if ("
         |> Print.followedBy
             (Print.withIndentAtNextMultipleOf4
-                (Print.spaceOrLinebreakIndented conditionLineSpread
-                    |> Print.followedBy conditionPrint
-                )
+                conditionPrint
             )
-        |> Print.followedBy
-            (Print.spaceOrLinebreakIndented conditionLineSpread)
         |> Print.followedBy
             (Print.exactly ")")
         |> Print.followedBy
@@ -7041,7 +7028,7 @@ printGrainLetDestructuring letDestructuring =
                 )
             )
         |> Print.followedBy
-            (Print.exactly " :")
+            (Print.exactly ": ")
         |> Print.followedBy
             (Print.withIndentAtNextMultipleOf4 patternTypePrint)
         |> Print.followedBy
@@ -7073,15 +7060,19 @@ printGrainExpressionMatchCase branch =
         , inner =
             Print.withIndentIncreasedBy 2
                 patternPrint
-                |> Print.followedBy
-                    (Print.spaceOrLinebreakIndented
-                        (patternPrint |> Print.lineSpread)
-                    )
-                |> Print.followedBy (Print.exactly " :")
-                |> Print.followedBy
-                    (Print.withIndentAtNextMultipleOf4
-                        patternTypePrint
-                    )
+
+        --|> Print.followedBy (Print.exactly ":")
+        --|> Print.followedBy
+        --    (Print.withIndentAtNextMultipleOf4
+        --        (Print.spaceOrLinebreakIndented
+        --            ((patternPrint |> Print.lineSpread)
+        --                |> Print.lineSpreadMergeWith
+        --                    (\() -> patternTypePrint |> Print.lineSpread)
+        --            )
+        --            |> Print.followedBy
+        --                patternTypePrint
+        --        )
+        --    )
         }
         |> Print.followedBy (Print.exactly " =>")
         |> Print.followedBy
@@ -7104,8 +7095,7 @@ grainDeclarationsToModuleString :
     { valuesAndFunctions :
         FastDict.Dict
             String
-            { parameters : List GrainPattern
-            , result : GrainExpression
+            { result : GrainExpression
             , type_ : GrainType
             }
     , typeAliases :
@@ -7174,6 +7164,29 @@ grainDeclarationsToModuleString grainDeclarations =
                                 }
                             )
                 }
+
+        valueAndFunctionDeclarationsThatNeedToBeUsedLazily : FastSet.Set String
+        valueAndFunctionDeclarationsThatNeedToBeUsedLazily =
+            valueAndFunctionDeclarationsOrdered.mostToLeastDependedOn
+                |> List.concatMap
+                    (\dependencyGroup ->
+                        case dependencyGroup of
+                            GrainValueOrFunctionDependencySingle _ ->
+                                []
+
+                            GrainValueOrFunctionDependencyRecursiveBucket recursiveGroup ->
+                                recursiveGroup
+                                    |> List.filterMap
+                                        (\grainValueOrFunctionDeclaration ->
+                                            case grainValueOrFunctionDeclaration.result of
+                                                GrainExpressionLambda _ ->
+                                                    Nothing
+
+                                                _ ->
+                                                    Just grainValueOrFunctionDeclaration.name
+                                        )
+                    )
+                |> FastSet.fromList
     in
     """module Elm
 
@@ -7214,12 +7227,12 @@ from "string" include String
                             GrainValueOrFunctionDependencySingle single ->
                                 case single of
                                     GrainEnumTypeDeclaration enumDeclaration ->
-                                        Print.exactly "enum "
+                                        Print.exactly "provide enum "
                                             |> Print.followedBy
                                                 (printGrainEnumTypeDeclaration enumDeclaration)
 
                                     GrainTypeAliasDeclaration aliasDeclaration ->
-                                        Print.exactly "type "
+                                        Print.exactly "provide type "
                                             |> Print.followedBy
                                                 (printGrainTypeAliasDeclaration aliasDeclaration)
 
@@ -7231,12 +7244,12 @@ from "string" include String
                                     recursiveBucketMember0 :: recursiveBucketMember1Up ->
                                         (case recursiveBucketMember0 of
                                             GrainEnumTypeDeclaration enumDeclaration ->
-                                                Print.exactly "enum rec "
+                                                Print.exactly "provide enum rec "
                                                     |> Print.followedBy
                                                         (printGrainEnumTypeDeclaration enumDeclaration)
 
                                             GrainTypeAliasDeclaration aliasDeclaration ->
-                                                Print.exactly "type rec "
+                                                Print.exactly "provide type rec "
                                                     |> Print.followedBy
                                                         (printGrainTypeAliasDeclaration aliasDeclaration)
                                         )
@@ -7249,12 +7262,12 @@ from "string" include String
                                                                 |> Print.followedBy
                                                                     (case typeDeclaration of
                                                                         GrainEnumTypeDeclaration enumDeclaration ->
-                                                                            Print.exactly "and enum "
+                                                                            Print.exactly "and provide enum "
                                                                                 |> Print.followedBy
                                                                                     (printGrainEnumTypeDeclaration enumDeclaration)
 
                                                                         GrainTypeAliasDeclaration aliasDeclaration ->
-                                                                            Print.exactly "and type "
+                                                                            Print.exactly "and provide type "
                                                                                 |> Print.followedBy
                                                                                     (printGrainTypeAliasDeclaration aliasDeclaration)
                                                                     )
@@ -7272,13 +7285,62 @@ from "string" include String
 
 """
         ++ ((valueAndFunctionDeclarationsOrdered.mostToLeastDependedOn
+                |> List.map
+                    (\dependencyGroup ->
+                        case dependencyGroup of
+                            GrainValueOrFunctionDependencySingle grainValueOrFunction ->
+                                GrainValueOrFunctionDependencySingle
+                                    { name = grainValueOrFunction.name
+                                    , type_ = grainValueOrFunction.type_
+                                    , result =
+                                        grainValueOrFunction.result
+                                            |> grainExpressionMakeNecessaryValuesLazy
+                                                valueAndFunctionDeclarationsThatNeedToBeUsedLazily
+                                    }
+
+                            GrainValueOrFunctionDependencyRecursiveBucket recursiveGroup ->
+                                GrainValueOrFunctionDependencyRecursiveBucket
+                                    (recursiveGroup
+                                        |> List.map
+                                            (\grainValueOrFunctionDeclaration ->
+                                                if
+                                                    valueAndFunctionDeclarationsThatNeedToBeUsedLazily
+                                                        |> FastSet.member grainValueOrFunctionDeclaration.name
+                                                then
+                                                    { name = grainValueOrFunctionDeclaration.name
+                                                    , result =
+                                                        GrainExpressionLambda
+                                                            { parameters = []
+                                                            , result =
+                                                                grainValueOrFunctionDeclaration.result
+                                                                    |> grainExpressionMakeNecessaryValuesLazy
+                                                                        valueAndFunctionDeclarationsThatNeedToBeUsedLazily
+                                                            }
+                                                    , type_ =
+                                                        GrainTypeFunction
+                                                            { input = []
+                                                            , output = grainValueOrFunctionDeclaration.type_
+                                                            }
+                                                    }
+
+                                                else
+                                                    { name = grainValueOrFunctionDeclaration.name
+                                                    , type_ = grainValueOrFunctionDeclaration.type_
+                                                    , result =
+                                                        grainValueOrFunctionDeclaration.result
+                                                            |> grainExpressionMakeNecessaryValuesLazy
+                                                                valueAndFunctionDeclarationsThatNeedToBeUsedLazily
+                                                    }
+                                            )
+                                    )
+                    )
                 |> Print.listMapAndIntersperseAndFlatten
                     (\dependencyGroup ->
                         case dependencyGroup of
-                            GrainValueOrFunctionDependencySingle letValueOrFunction ->
+                            GrainValueOrFunctionDependencySingle grainValueOrFunction ->
                                 Print.exactly "provide let "
                                     |> Print.followedBy
-                                        (letValueOrFunction |> printGrainValueOrFunctionDeclaration)
+                                        (grainValueOrFunction |> printGrainValueOrFunctionDeclaration)
                                     |> Print.followedBy Print.linebreak
                                     |> Print.followedBy Print.linebreakIndented
 
@@ -7288,23 +7350,12 @@ from "string" include String
                                         Print.empty
 
                                     grainValueOrFunctionDeclaration0 :: grainValueOrFunctionDeclaration1Up ->
-                                        (case grainValueOrFunctionDeclaration0.result of
-                                            GrainExpressionLambda _ ->
-                                                Print.exactly "provide let rec "
-                                                    |> Print.followedBy
-                                                        ((grainValueOrFunctionDeclaration0 |> printGrainValueOrFunctionDeclaration)
-                                                            |> Print.followedBy Print.linebreak
-                                                            |> Print.followedBy Print.linebreakIndented
-                                                        )
-
-                                            _ ->
-                                                Print.exactly "provide let "
-                                                    |> Print.followedBy
-                                                        ((grainValueOrFunctionDeclaration0 |> printGrainValueOrFunctionDeclaration)
-                                                            |> Print.followedBy Print.linebreak
-                                                            |> Print.followedBy Print.linebreakIndented
-                                                        )
-                                        )
+                                        Print.exactly "provide let rec "
+                                            |> Print.followedBy
+                                                ((grainValueOrFunctionDeclaration0 |> printGrainValueOrFunctionDeclaration)
+                                                    |> Print.followedBy Print.linebreak
+                                                    |> Print.followedBy Print.linebreakIndented
+                                                )
                                             |> Print.followedBy
                                                 (grainValueOrFunctionDeclaration1Up
                                                     |> Print.listMapAndIntersperseAndFlatten
@@ -7337,7 +7388,7 @@ let basics_gt: (Number, Number) => Bool = (a, b) => a > b
 let basics_le: (Number, Number) => Bool = (a, b) => a <= b
 let basics_ge: (Number, Number) => Bool = (a, b) => a >= b
 
-enum Basics_Order {
+provide enum Basics_Order {
   Basics_LT,
   Basics_EQ,
   Basics_GT,
@@ -7395,9 +7446,9 @@ let char_fromCode: Number => Char = charCode =>
   }
 let char_isHexDigit: Char => Bool = char => {
   let code = Char.code(char)
-  0x30 <= code && code <= 0x39
-    || 0x41 <= code && code <= 0x46
-    || 0x61 <= code && code <= 0x66
+  0x30 <= code && code <= 0x39 ||
+    0x41 <= code && code <= 0x46 ||
+    0x61 <= code && code <= 0x66
 }
 
 let list_singleton: a => List<a> = onlyElement => [onlyElement]
@@ -7459,16 +7510,26 @@ let string_slice: (Number, Number, String) => String = (
   endExclusivePossiblyNegative,
   string,
 ) => {
-  let startInclusive = if (startInclusivePossiblyNegative < 0)
-    String.length(string) - startInclusivePossiblyNegative - 1
-  else
-    startInclusivePossiblyNegative
-  and endExclusive = if (endExclusivePossiblyNegative < 0)
-    String.length(string) - endExclusivePossiblyNegative
-  else
-    endExclusivePossiblyNegative
+  if (
+    startInclusivePossiblyNegative >= String.length(string) ||
+    endExclusivePossiblyNegative >= String.length(string)
+  ) {
+    ""
+  } else {
+    let startInclusive = if (startInclusivePossiblyNegative < 0)
+      Number.max(0, startInclusivePossiblyNegative + String.length(string))
+    else
+      startInclusivePossiblyNegative
+    and endExclusive = if (endExclusivePossiblyNegative < 0)
+      Number.max(0, endExclusivePossiblyNegative + String.length(string))
+    else
+      endExclusivePossiblyNegative
 
-  String.slice(start=startInclusive, end=endExclusive, string)
+    if (startInclusive >= endExclusive)
+      ""
+    else
+      String.slice(start=startInclusive, end=endExclusive, string)
+  }
 }
 let string_cons: (Char, String) => String = (newHeadChar, tail) =>
   String.concat(Char.toString(newHeadChar), tail)
@@ -7522,6 +7583,177 @@ let string_any: (Char => Bool, String) => Bool = (isFound, string) =>
 let string_all: (Char => Bool, String) => Bool = (isFound, string) =>
   Array.every(isFound, String.explode(string))
 """
+
+
+grainExpressionMakeNecessaryValuesLazy : FastSet.Set String -> GrainExpression -> GrainExpression
+grainExpressionMakeNecessaryValuesLazy lazyValues grainExpression =
+    -- IGNORE TCO
+    case grainExpression of
+        GrainExpressionReference reference ->
+            case reference.moduleOrigin of
+                Just _ ->
+                    GrainExpressionReference reference
+
+                Nothing ->
+                    if lazyValues |> FastSet.member reference.name then
+                        GrainExpressionCall
+                            { called = GrainExpressionReference reference
+                            , arguments = []
+                            }
+
+                    else
+                        GrainExpressionReference reference
+
+        GrainExpressionFloat float ->
+            GrainExpressionFloat float
+
+        GrainExpressionChar char ->
+            GrainExpressionChar char
+
+        GrainExpressionString string ->
+            GrainExpressionString string
+
+        GrainExpressionRecordAccess recordAccess ->
+            GrainExpressionRecordAccess
+                { record =
+                    recordAccess.record
+                        |> grainExpressionMakeNecessaryValuesLazy lazyValues
+                , field = recordAccess.field
+                }
+
+        GrainExpressionTuple parts ->
+            GrainExpressionTuple
+                { part0 =
+                    parts.part0
+                        |> grainExpressionMakeNecessaryValuesLazy lazyValues
+                , part1 =
+                    parts.part1
+                        |> grainExpressionMakeNecessaryValuesLazy lazyValues
+                , part2Up =
+                    parts.part2Up
+                        |> List.map (grainExpressionMakeNecessaryValuesLazy lazyValues)
+                }
+
+        GrainExpressionIfElse ifThenElse ->
+            GrainExpressionIfElse
+                { condition =
+                    ifThenElse.condition
+                        |> grainExpressionMakeNecessaryValuesLazy lazyValues
+                , onTrue =
+                    ifThenElse.onTrue
+                        |> grainExpressionMakeNecessaryValuesLazy lazyValues
+                , onFalse =
+                    ifThenElse.onFalse
+                        |> grainExpressionMakeNecessaryValuesLazy lazyValues
+                }
+
+        GrainExpressionList elements ->
+            GrainExpressionList
+                (elements
+                    |> List.map (grainExpressionMakeNecessaryValuesLazy lazyValues)
+                )
+
+        GrainExpressionRecord fields ->
+            GrainExpressionRecord
+                (fields
+                    |> FastDict.map
+                        (\_ value ->
+                            value |> grainExpressionMakeNecessaryValuesLazy lazyValues
+                        )
+                )
+
+        GrainExpressionRecordUpdate recordUpdate ->
+            GrainExpressionRecordUpdate
+                { originalRecordVariable = recordUpdate.originalRecordVariable
+                , fields =
+                    recordUpdate.fields
+                        |> FastDict.map
+                            (\_ value ->
+                                value |> grainExpressionMakeNecessaryValuesLazy lazyValues
+                            )
+                }
+
+        GrainExpressionCall call ->
+            GrainExpressionCall
+                { called =
+                    call.called
+                        |> grainExpressionMakeNecessaryValuesLazy lazyValues
+                , arguments =
+                    call.arguments
+                        |> List.map (grainExpressionMakeNecessaryValuesLazy lazyValues)
+                }
+
+        GrainExpressionLambda lambda ->
+            GrainExpressionLambda
+                { parameters = lambda.parameters
+                , result =
+                    lambda.result
+                        |> grainExpressionMakeNecessaryValuesLazy lazyValues
+                }
+
+        GrainExpressionMatch match ->
+            GrainExpressionMatch
+                { matched =
+                    match.matched
+                        |> grainExpressionMakeNecessaryValuesLazy lazyValues
+                , case0 =
+                    match.case0
+                        |> (\grainCase ->
+                                { pattern = grainCase.pattern
+                                , patternType = grainCase.patternType
+                                , result =
+                                    grainCase.result
+                                        |> grainExpressionMakeNecessaryValuesLazy lazyValues
+                                }
+                           )
+                , case1Up =
+                    match.case1Up
+                        |> List.map
+                            (\grainCase ->
+                                { pattern = grainCase.pattern
+                                , patternType = grainCase.patternType
+                                , result =
+                                    grainCase.result
+                                        |> grainExpressionMakeNecessaryValuesLazy lazyValues
+                                }
+                            )
+                }
+
+        GrainExpressionWithLetDeclarations withLetDeclarations ->
+            GrainExpressionWithLetDeclarations
+                { declaration0 =
+                    withLetDeclarations.declaration0
+                        |> grainLetDeclarationMakeNecessaryValuesLazy lazyValues
+                , declaration1Up =
+                    withLetDeclarations.declaration1Up
+                        |> List.map
+                            (grainLetDeclarationMakeNecessaryValuesLazy lazyValues)
+                , result =
+                    withLetDeclarations.result
+                        |> grainExpressionMakeNecessaryValuesLazy lazyValues
+                }
+
+
+grainLetDeclarationMakeNecessaryValuesLazy : FastSet.Set String -> GrainLetDeclaration -> GrainLetDeclaration
+grainLetDeclarationMakeNecessaryValuesLazy lazyValues grainLetDeclaration =
+    case grainLetDeclaration of
+        GrainLetDestructuring grainLetDestructuring ->
+            GrainLetDestructuring
+                { pattern = grainLetDestructuring.pattern
+                , patternType = grainLetDestructuring.patternType
+                , expression =
+                    grainLetDestructuring.expression
+                        |> grainExpressionMakeNecessaryValuesLazy lazyValues
+                }
+
+        GrainLetDeclarationValueOrFunction grainLetDeclarationValueOrFunction ->
+            GrainLetDeclarationValueOrFunction
+                { name = grainLetDeclarationValueOrFunction.name
+                , result =
+                    grainLetDeclarationValueOrFunction.result
+                        |> grainExpressionMakeNecessaryValuesLazy lazyValues
+                , type_ = grainLetDeclarationValueOrFunction.type_
+                }
 
 
 resultAndThen3 :
