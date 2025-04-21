@@ -10,13 +10,17 @@ elm.js
 main.js
 elmMain.js
 dist
+elm-syntax-format
 
 testing.gr
 elm.gr
 _build
 target
 *.wasm
+*.wasmu
 *.gro
+run
+run.sh
 
 # Editors
 .idea/
