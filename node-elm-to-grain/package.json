@@ -14,7 +14,7 @@
   "bin": "./dist/elm-to-grain",
   "scripts": {
     "build": "node build.js && esbuild src/index.js --bundle --minify --platform=node --outfile=dist/index.cjs && node --experimental-sea-config sea-config.json && cp $(command -v node) dist/elm-to-grain && postject dist/elm-to-grain NODE_SEA_BLOB dist/sea-prep.blob --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2",
-    "build-debug": "elm-esm make src/Main.elm --output=src/elmMain.js && esbuild src/index.js --bundle --minify --platform=node --outfile=dist/index.cjs && node --experimental-sea-config sea-config.json && cp $(command -v node) dist/elm-to-grain && postject dist/elm-to-grain NODE_SEA_BLOB dist/sea-prep.blob --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2",
+    "build-debug": "elm-esm make src/Main.elm --output=src/elmMain.js && esbuild src/index.js --bundle --platform=node --outfile=dist/index.cjs && node --experimental-sea-config sea-config.json && cp $(command -v node) dist/elm-to-grain && postject dist/elm-to-grain NODE_SEA_BLOB dist/sea-prep.blob --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2",
     "start": "node build.js && node src/index.js"
   }
 }

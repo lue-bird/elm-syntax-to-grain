@@ -22,6 +22,9 @@ target
 run
 run.sh
 
+*.log
+flamegraph.html
+
 # Editors
 .idea/
 ElmjutsuDumMyM0DuL3.elm
