@@ -7510,10 +7510,7 @@ let string_slice: (Number, Number, String) => String = (
   endExclusivePossiblyNegative,
   string,
 ) => {
-  if (
-    startInclusivePossiblyNegative >= String.length(string) ||
-    endExclusivePossiblyNegative >= String.length(string)
-  ) {
+  if (startInclusivePossiblyNegative >= String.length(string)) {
     ""
   } else {
     let startInclusive = if (startInclusivePossiblyNegative < 0)
@@ -7523,7 +7520,7 @@ let string_slice: (Number, Number, String) => String = (
     and endExclusive = if (endExclusivePossiblyNegative < 0)
       Number.max(0, endExclusivePossiblyNegative + String.length(string))
     else
-      endExclusivePossiblyNegative
+      Number.min(endExclusivePossiblyNegative, String.length(string))
 
     if (startInclusive >= endExclusive)
       ""
