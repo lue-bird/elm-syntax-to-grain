@@ -4,7 +4,7 @@ import ElmSyntaxParserLenient
 import ElmSyntaxPrint
 
 
-formatSingleModule : String -> String
+formatSingleModule : String -> Maybe String
 formatSingleModule originalSource =
     case
         originalSource
@@ -14,6 +14,7 @@ formatSingleModule originalSource =
             syntaxModule
                 |> ElmSyntaxPrint.module_
                 |> ElmSyntaxPrint.toString
+                |> Just
         
         Nothing ->
-            originalSource
+            Nothing
