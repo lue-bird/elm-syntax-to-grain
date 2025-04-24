@@ -57,7 +57,7 @@ type GrainType
 -}
 type GrainPattern
     = GrainPatternIgnore
-    | GrainPatternNumber Float
+    | GrainPatternInt64 Int
     | GrainPatternChar Char
     | GrainPatternString String
     | GrainPatternVariable String
@@ -87,7 +87,8 @@ type GrainPattern
 {-| The sub-set of grain expression syntax used in generated code
 -}
 type GrainExpression
-    = GrainExpressionFloat Float
+    = GrainExpressionFloat64 Float
+    | GrainExpressionInt64 Int
     | GrainExpressionChar Char
     | GrainExpressionString String
     | GrainExpressionReference
@@ -852,7 +853,10 @@ grainExpressionSubs grainExpression =
         GrainExpressionRecordAccess recordAccess ->
             [ recordAccess.record ]
 
-        GrainExpressionFloat _ ->
+        GrainExpressionInt64 _ ->
+            []
+
+        GrainExpressionFloat64 _ ->
             []
 
         GrainExpressionString _ ->
@@ -1105,9 +1109,9 @@ printGrainRecordTypeDeclaration grainRecordFields =
 type_ :
     ElmSyntaxTypeInfer.Type String
     -> Result String GrainType
-type_ syntaxType =
+type_ inferredType =
     -- IGNORE TCO
-    case syntaxType of
+    case inferredType of
         ElmSyntaxTypeInfer.TypeVariable variable ->
             Ok (GrainTypeVariable (variable |> variableNameDisambiguateFromGrainKeywords))
 
@@ -1126,7 +1130,7 @@ type_ syntaxType =
                                         { moduleOrigin = typeConstruct.moduleOrigin
                                         , name = typeConstruct.name
                                         }
-                                            |> referenceToCoreGrain
+                                            |> typeConstructReferenceToCoreGrain
                                     of
                                         Just coreGrain ->
                                             coreGrain
@@ -1294,7 +1298,7 @@ typeAnnotation moduleOriginLookup (Elm.Syntax.Node.Node _ syntaxType) =
                                         { moduleOrigin = moduleOrigin
                                         , name = name
                                         }
-                                            |> referenceToCoreGrain
+                                            |> typeConstructReferenceToCoreGrain
                                     of
                                         Just coreGrain ->
                                             coreGrain
@@ -1990,9 +1994,9 @@ pattern :
             { pattern : GrainPattern
             , introducedVariables : FastSet.Set String
             }
-pattern syntaxPattern =
+pattern patternInferred =
     -- IGNORE TCO
-    case syntaxPattern.value of
+    case patternInferred.value of
         ElmSyntaxTypeInfer.PatternIgnored ->
             Ok
                 { pattern = GrainPatternIgnore
@@ -2019,7 +2023,7 @@ pattern syntaxPattern =
 
         ElmSyntaxTypeInfer.PatternInt intValue ->
             Ok
-                { pattern = GrainPatternNumber (intValue.value |> Basics.toFloat)
+                { pattern = GrainPatternInt64 intValue.value
                 , introducedVariables = FastSet.empty
                 }
 
@@ -2156,7 +2160,13 @@ pattern syntaxPattern =
                     let
                         reference : { moduleOrigin : Maybe String, name : String }
                         reference =
-                            case { moduleOrigin = variant.moduleOrigin, name = variant.name } |> referenceToCoreGrain of
+                            case
+                                { moduleOrigin = variant.moduleOrigin
+                                , name = variant.name
+                                , type_ = patternInferred.type_
+                                }
+                                    |> referenceToCoreGrain
+                            of
                                 Just grainReference ->
                                     grainReference
 
@@ -2376,9 +2386,84 @@ patternConsExpandFromInitialElementsReverse initialElementsSoFarReverse syntaxPa
             }
 
 
+typeConstructReferenceToCoreGrain :
+    { moduleOrigin : Elm.Syntax.ModuleName.ModuleName
+    , name : String
+    }
+    ->
+        Maybe
+            { moduleOrigin : Maybe String
+            , name : String
+            }
+typeConstructReferenceToCoreGrain reference =
+    case reference.moduleOrigin of
+        [ "Basics" ] ->
+            case reference.name of
+                "Order" ->
+                    Just { moduleOrigin = Nothing, name = "Basics_Order" }
+
+                "Bool" ->
+                    Just { moduleOrigin = Nothing, name = "Bool" }
+
+                "Int" ->
+                    Just { moduleOrigin = Nothing, name = "Int64" }
+
+                "Float" ->
+                    Just { moduleOrigin = Nothing, name = "Float64" }
+
+                _ ->
+                    Nothing
+
+        [ "String" ] ->
+            case reference.name of
+                "String" ->
+                    Just { moduleOrigin = Nothing, name = "String" }
+
+                _ ->
+                    Nothing
+
+        [ "Char" ] ->
+            case reference.name of
+                "Char" ->
+                    Just { moduleOrigin = Nothing, name = "Char" }
+
+                _ ->
+                    Nothing
+
+        [ "List" ] ->
+            case reference.name of
+                "List" ->
+                    Just { moduleOrigin = Nothing, name = "List" }
+
+                _ ->
+                    Nothing
+
+        [ "Parser" ] ->
+            case reference.name of
+                "Problem" ->
+                    Just { moduleOrigin = Nothing, name = "Parser_Problem" }
+
+                _ ->
+                    Nothing
+
+        [ "Maybe" ] ->
+            case reference.name of
+                "Maybe" ->
+                    Just { moduleOrigin = Nothing, name = "Option" }
+
+                _ ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+{-| Use `typeConstructReferenceToCoreGrain` for types
+-}
 referenceToCoreGrain :
     { moduleOrigin : Elm.Syntax.ModuleName.ModuleName
     , name : String
+    , type_ : ElmSyntaxTypeInfer.Type String
     }
     ->
         Maybe
@@ -2399,13 +2484,10 @@ referenceToCoreGrain reference =
                     Just { moduleOrigin = Nothing, name = "basics_compare" }
 
                 "max" ->
-                    Just { moduleOrigin = Just "Number", name = "max" }
+                    Just { moduleOrigin = Nothing, name = "basics_max" }
 
                 "min" ->
-                    Just { moduleOrigin = Just "Number", name = "min" }
-
-                "Order" ->
-                    Just { moduleOrigin = Nothing, name = "Basics_Order" }
+                    Just { moduleOrigin = Nothing, name = "basics_min" }
 
                 "LT" ->
                     Just { moduleOrigin = Nothing, name = "Basics_LT" }
@@ -2415,9 +2497,6 @@ referenceToCoreGrain reference =
 
                 "GT" ->
                     Just { moduleOrigin = Nothing, name = "Basics_GT" }
-
-                "Bool" ->
-                    Just { moduleOrigin = Nothing, name = "Bool" }
 
                 "True" ->
                     Just { moduleOrigin = Nothing, name = "true" }
@@ -2431,88 +2510,115 @@ referenceToCoreGrain reference =
                 "xor" ->
                     Just { moduleOrigin = Nothing, name = "basics_neq" }
 
-                "Int" ->
-                    Just { moduleOrigin = Nothing, name = "Number" }
-
-                "Float" ->
-                    Just { moduleOrigin = Nothing, name = "Number" }
-
                 "e" ->
-                    Just { moduleOrigin = Just "Number", name = "e" }
+                    Just { moduleOrigin = Just "Float64", name = "e" }
 
                 "pi" ->
-                    Just { moduleOrigin = Just "Number", name = "pi" }
+                    Just { moduleOrigin = Just "Float64", name = "pi" }
 
                 "ceiling" ->
-                    Just { moduleOrigin = Just "Number", name = "ceil" }
+                    Just { moduleOrigin = Nothing, name = "basics_ceil" }
 
                 "floor" ->
-                    Just { moduleOrigin = Just "Number", name = "floor" }
+                    Just { moduleOrigin = Nothing, name = "basics_floor" }
 
                 "round" ->
-                    Just { moduleOrigin = Just "Number", name = "round" }
+                    Just { moduleOrigin = Nothing, name = "basics_round" }
 
                 "truncate" ->
-                    Just { moduleOrigin = Just "Number", name = "trunc" }
+                    Just { moduleOrigin = Nothing, name = "basics_truncate" }
 
                 "negate" ->
-                    Just { moduleOrigin = Just "Number", name = "neg" }
+                    case reference.type_ of
+                        ElmSyntaxTypeInfer.TypeNotVariable (ElmSyntaxTypeInfer.TypeFunction typeFunction) ->
+                            case typeFunction.input of
+                                ElmSyntaxTypeInfer.TypeNotVariable (ElmSyntaxTypeInfer.TypeConstruct parameter0TypeConstruct) ->
+                                    case parameter0TypeConstruct.name of
+                                        "Int" ->
+                                            Just { moduleOrigin = Nothing, name = "basics_inegate" }
+
+                                        "Float" ->
+                                            Just { moduleOrigin = Just "Float64", name = "neg" }
+
+                                        _ ->
+                                            Nothing
+
+                                _ ->
+                                    Nothing
+
+                        _ ->
+                            Nothing
 
                 "abs" ->
-                    Just { moduleOrigin = Just "Number", name = "abs" }
+                    case reference.type_ of
+                        ElmSyntaxTypeInfer.TypeNotVariable (ElmSyntaxTypeInfer.TypeFunction typeFunction) ->
+                            case typeFunction.input of
+                                ElmSyntaxTypeInfer.TypeNotVariable (ElmSyntaxTypeInfer.TypeConstruct parameter0TypeConstruct) ->
+                                    case parameter0TypeConstruct.name of
+                                        "Int" ->
+                                            Just { moduleOrigin = Nothing, name = "basics_iabs" }
+
+                                        "Float" ->
+                                            Just { moduleOrigin = Just "Float64", name = "abs" }
+
+                                        _ ->
+                                            Nothing
+
+                                _ ->
+                                    Nothing
+
+                        _ ->
+                            Nothing
 
                 "toFloat" ->
-                    Just { moduleOrigin = Nothing, name = "identity" }
+                    Just { moduleOrigin = Nothing, name = "basics_toFloat" }
 
                 "isNaN" ->
-                    Just { moduleOrigin = Just "Number", name = "isNaN" }
+                    Just { moduleOrigin = Just "Float64", name = "isNaN" }
 
                 "isInfinite" ->
-                    Just { moduleOrigin = Just "Number", name = "isInfinite" }
+                    Just { moduleOrigin = Just "Float64", name = "isInfinite" }
 
                 "remainderBy" ->
-                    Just { moduleOrigin = Nothing, name = "basics_remainderBy" }
+                    Just { moduleOrigin = Just "Int64", name = "rem" }
 
                 "modBy" ->
                     Just { moduleOrigin = Nothing, name = "basics_modBy" }
 
                 "sin" ->
-                    Just { moduleOrigin = Just "Number", name = "sin" }
+                    Just { moduleOrigin = Nothing, name = "basics_sin" }
 
                 "cos" ->
-                    Just { moduleOrigin = Just "Number", name = "cos" }
+                    Just { moduleOrigin = Nothing, name = "basics_cos" }
 
                 "tan" ->
-                    Just { moduleOrigin = Just "Number", name = "tan" }
+                    Just { moduleOrigin = Nothing, name = "basics_tan" }
 
                 "asin" ->
-                    Just { moduleOrigin = Just "Number", name = "asin" }
+                    Just { moduleOrigin = Nothing, name = "basics_asin" }
 
                 "acos" ->
-                    Just { moduleOrigin = Just "Number", name = "acos" }
+                    Just { moduleOrigin = Nothing, name = "basics_acos" }
 
                 "atan" ->
-                    Just { moduleOrigin = Just "Number", name = "atan" }
+                    Just { moduleOrigin = Nothing, name = "basics_atan" }
 
                 "atan2" ->
-                    Just { moduleOrigin = Just "Number", name = "atan2" }
+                    Just { moduleOrigin = Nothing, name = "basics_atan2" }
 
                 "sqrt" ->
-                    Just { moduleOrigin = Just "Number", name = "sqrt" }
+                    Just { moduleOrigin = Nothing, name = "basics_sqrt" }
 
                 _ ->
                     Nothing
 
         [ "String" ] ->
             case reference.name of
-                "String" ->
-                    Just { moduleOrigin = Nothing, name = "String" }
-
                 "isEmpty" ->
                     Just { moduleOrigin = Just "String", name = "isEmpty" }
 
                 "length" ->
-                    Just { moduleOrigin = Just "String", name = "length" }
+                    Just { moduleOrigin = Nothing, name = "string_length" }
 
                 "append" ->
                     Just { moduleOrigin = Just "String", name = "concat" }
@@ -2618,11 +2724,8 @@ referenceToCoreGrain reference =
 
         [ "Char" ] ->
             case reference.name of
-                "Char" ->
-                    Just { moduleOrigin = Nothing, name = "Char" }
-
                 "toCode" ->
-                    Just { moduleOrigin = Just "Char", name = "code" }
+                    Just { moduleOrigin = Nothing, name = "char_toCode" }
 
                 "fromCode" ->
                     Just { moduleOrigin = Nothing, name = "char_fromCode" }
@@ -2641,9 +2744,6 @@ referenceToCoreGrain reference =
 
         [ "List" ] ->
             case reference.name of
-                "List" ->
-                    Just { moduleOrigin = Nothing, name = "List" }
-
                 "singleton" ->
                     Just { moduleOrigin = Nothing, name = "list_singleton" }
 
@@ -2651,7 +2751,7 @@ referenceToCoreGrain reference =
                     Just { moduleOrigin = Just "List", name = "isEmpty" }
 
                 "length" ->
-                    Just { moduleOrigin = Just "List", name = "length" }
+                    Just { moduleOrigin = Nothing, name = "list_length" }
 
                 "member" ->
                     Just { moduleOrigin = Nothing, name = "list_member" }
@@ -2717,10 +2817,10 @@ referenceToCoreGrain reference =
                     Just { moduleOrigin = Nothing, name = "list_range" }
 
                 "take" ->
-                    Just { moduleOrigin = Just "List", name = "take" }
+                    Just { moduleOrigin = Nothing, name = "list_take" }
 
                 "drop" ->
-                    Just { moduleOrigin = Just "List", name = "drop" }
+                    Just { moduleOrigin = Nothing, name = "list_drop" }
 
                 "intersperse" ->
                     Just { moduleOrigin = Nothing, name = "list_intersperse" }
@@ -2742,7 +2842,6 @@ referenceToCoreGrain reference =
 
         [ "Parser" ] ->
             case reference.name of
-                -- refers to either a type or variant
                 "Problem" ->
                     Just { moduleOrigin = Nothing, name = "Parser_Problem" }
 
@@ -2827,8 +2926,8 @@ printGrainPatternNotParenthesized grainPattern =
         GrainPatternIgnore ->
             printExactlyUnderscore
 
-        GrainPatternNumber floatValue ->
-            Print.exactly (grainNumberLiteralToString floatValue)
+        GrainPatternInt64 int ->
+            Print.exactly ((int |> String.fromInt) ++ "L")
 
         GrainPatternChar charValue ->
             Print.exactly (charLiteral charValue)
@@ -4988,10 +5087,22 @@ expression context expressionTypedNode =
             Ok grainExpressionVoid
 
         ElmSyntaxTypeInfer.ExpressionInteger intValue ->
-            Ok (GrainExpressionFloat (intValue.value |> Basics.toFloat))
+            case expressionTypedNode.type_ of
+                ElmSyntaxTypeInfer.TypeNotVariable (ElmSyntaxTypeInfer.TypeConstruct typeConstruct) ->
+                    case typeConstruct.name of
+                        "Float" ->
+                            Ok (GrainExpressionFloat64 (intValue.value |> Basics.toFloat))
+
+                        _ ->
+                            -- assume Int
+                            Ok (GrainExpressionInt64 intValue.value)
+
+                _ ->
+                    -- assume Int
+                    Ok (GrainExpressionInt64 intValue.value)
 
         ElmSyntaxTypeInfer.ExpressionFloat floatValue ->
-            Ok (GrainExpressionFloat floatValue)
+            Ok (GrainExpressionFloat64 floatValue)
 
         ElmSyntaxTypeInfer.ExpressionChar charValue ->
             Ok (GrainExpressionChar charValue)
@@ -5039,7 +5150,12 @@ expression context expressionTypedNode =
                 (\operationFunctionReference ->
                     GrainExpressionReference operationFunctionReference
                 )
-                (expressionOperatorToGrainFunctionReference operator)
+                (expressionOperatorToGrainFunctionReference
+                    { moduleOrigin = operator.moduleOrigin
+                    , symbol = operator.symbol
+                    , type_ = expressionTypedNode.type_
+                    }
+                )
 
         ElmSyntaxTypeInfer.ExpressionCall call ->
             Result.map3
@@ -5128,9 +5244,7 @@ expression context expressionTypedNode =
                                 }
                         )
                         (expressionOperatorToGrainFunctionReference
-                            { symbol = otherOperatorSymbol
-                            , moduleOrigin = infixOperation.operator.moduleOrigin
-                            }
+                            infixOperation.operator
                         )
                         (infixOperation.left |> expression context)
                         (infixOperation.right |> expression context)
@@ -5173,7 +5287,13 @@ expression context expressionTypedNode =
                             let
                                 grainReference : { moduleOrigin : Maybe String, name : String }
                                 grainReference =
-                                    case { moduleOrigin = reference.moduleOrigin, name = reference.name } |> referenceToCoreGrain of
+                                    case
+                                        { moduleOrigin = reference.moduleOrigin
+                                        , name = reference.name
+                                        , type_ = expressionTypedNode.type_
+                                        }
+                                            |> referenceToCoreGrain
+                                    of
                                         Just grainCoreReference ->
                                             grainCoreReference
 
@@ -5243,7 +5363,10 @@ expression context expressionTypedNode =
                             Ok
                                 (GrainExpressionReference
                                     (case
-                                        { moduleOrigin = reference.moduleOrigin, name = reference.name }
+                                        { moduleOrigin = reference.moduleOrigin
+                                        , name = reference.name
+                                        , type_ = expressionTypedNode.type_
+                                        }
                                             |> referenceToCoreGrain
                                      of
                                         Just grainReference ->
@@ -5291,7 +5414,20 @@ expression context expressionTypedNode =
                     GrainExpressionCall
                         { called =
                             GrainExpressionReference
-                                { moduleOrigin = Just "Number", name = "neg" }
+                                (case inNegationNode.type_ of
+                                    ElmSyntaxTypeInfer.TypeNotVariable (ElmSyntaxTypeInfer.TypeConstruct typeConstruct) ->
+                                        case typeConstruct.name of
+                                            "Float" ->
+                                                { moduleOrigin = Just "Float64", name = "neg" }
+
+                                            _ ->
+                                                -- assume Int
+                                                { moduleOrigin = Nothing, name = "basics_inegate" }
+
+                                    _ ->
+                                        -- assume Int
+                                        { moduleOrigin = Nothing, name = "basics_inegate" }
+                                )
                         , arguments = [ inNegation ]
                         }
                 )
@@ -5894,18 +6030,75 @@ letValueOrFunctionDeclaration context syntaxLetDeclarationValueOrFunction =
 
 
 expressionOperatorToGrainFunctionReference :
-    { symbol : String, moduleOrigin : Elm.Syntax.ModuleName.ModuleName }
+    { symbol : String
+    , moduleOrigin : Elm.Syntax.ModuleName.ModuleName
+    , type_ : ElmSyntaxTypeInfer.Type String
+    }
     -> Result String { moduleOrigin : Maybe String, name : String }
 expressionOperatorToGrainFunctionReference operatorSymbol =
     case operatorSymbol.symbol of
         "+" ->
-            Ok { moduleOrigin = Nothing, name = "basics_add" }
+            case operatorSymbol.type_ of
+                ElmSyntaxTypeInfer.TypeNotVariable (ElmSyntaxTypeInfer.TypeFunction typeFunction) ->
+                    case typeFunction.input of
+                        ElmSyntaxTypeInfer.TypeNotVariable (ElmSyntaxTypeInfer.TypeConstruct parameter0TypeConstruct) ->
+                            case parameter0TypeConstruct.name of
+                                "Float" ->
+                                    Ok { moduleOrigin = Nothing, name = "basics_fadd" }
+
+                                _ ->
+                                    -- assume Int
+                                    Ok { moduleOrigin = Nothing, name = "basics_iadd" }
+
+                        _ ->
+                            -- assume Int
+                            Ok { moduleOrigin = Nothing, name = "basics_iadd" }
+
+                _ ->
+                    -- assume Int
+                    Ok { moduleOrigin = Nothing, name = "basics_iadd" }
 
         "-" ->
-            Ok { moduleOrigin = Nothing, name = "basics_sub" }
+            case operatorSymbol.type_ of
+                ElmSyntaxTypeInfer.TypeNotVariable (ElmSyntaxTypeInfer.TypeFunction typeFunction) ->
+                    case typeFunction.input of
+                        ElmSyntaxTypeInfer.TypeNotVariable (ElmSyntaxTypeInfer.TypeConstruct parameter0TypeConstruct) ->
+                            case parameter0TypeConstruct.name of
+                                "Float" ->
+                                    Ok { moduleOrigin = Nothing, name = "basics_fsub" }
+
+                                _ ->
+                                    -- assume Int
+                                    Ok { moduleOrigin = Nothing, name = "basics_isub" }
+
+                        _ ->
+                            -- assume generic number, therefore likely Int in practice
+                            Ok { moduleOrigin = Nothing, name = "basics_isub" }
+
+                _ ->
+                    -- assume generic number, therefore likely Int in practice
+                    Ok { moduleOrigin = Nothing, name = "basics_isub" }
 
         "*" ->
-            Ok { moduleOrigin = Nothing, name = "basics_mul" }
+            case operatorSymbol.type_ of
+                ElmSyntaxTypeInfer.TypeNotVariable (ElmSyntaxTypeInfer.TypeFunction typeFunction) ->
+                    case typeFunction.input of
+                        ElmSyntaxTypeInfer.TypeNotVariable (ElmSyntaxTypeInfer.TypeConstruct parameter0TypeConstruct) ->
+                            case parameter0TypeConstruct.name of
+                                "Float" ->
+                                    Ok { moduleOrigin = Nothing, name = "basics_fmul" }
+
+                                _ ->
+                                    -- assume Int
+                                    Ok { moduleOrigin = Nothing, name = "basics_imul" }
+
+                        _ ->
+                            -- assume Int
+                            Ok { moduleOrigin = Nothing, name = "basics_imul" }
+
+                _ ->
+                    -- assume Int
+                    Ok { moduleOrigin = Nothing, name = "basics_imul" }
 
         "/" ->
             Ok { moduleOrigin = Nothing, name = "basics_fdiv" }
@@ -5914,7 +6107,25 @@ expressionOperatorToGrainFunctionReference operatorSymbol =
             Ok { moduleOrigin = Nothing, name = "basics_idiv" }
 
         "^" ->
-            Ok { moduleOrigin = Nothing, name = "basics_pow" }
+            case operatorSymbol.type_ of
+                ElmSyntaxTypeInfer.TypeNotVariable (ElmSyntaxTypeInfer.TypeFunction typeFunction) ->
+                    case typeFunction.input of
+                        ElmSyntaxTypeInfer.TypeNotVariable (ElmSyntaxTypeInfer.TypeConstruct parameter0TypeConstruct) ->
+                            case parameter0TypeConstruct.name of
+                                "Float" ->
+                                    Ok { moduleOrigin = Nothing, name = "basics_fpow" }
+
+                                _ ->
+                                    -- assume Int
+                                    Ok { moduleOrigin = Nothing, name = "basics_ipow" }
+
+                        _ ->
+                            -- assume Int
+                            Ok { moduleOrigin = Nothing, name = "basics_ipow" }
+
+                _ ->
+                    -- assume Int
+                    Ok { moduleOrigin = Nothing, name = "basics_ipow" }
 
         "==" ->
             Ok { moduleOrigin = Nothing, name = "basics_eq" }
@@ -6228,7 +6439,10 @@ grainExpressionIsSpaceSeparated grainExpression =
         GrainExpressionChar _ ->
             False
 
-        GrainExpressionFloat _ ->
+        GrainExpressionInt64 _ ->
+            False
+
+        GrainExpressionFloat64 _ ->
             False
 
         GrainExpressionString _ ->
@@ -6287,8 +6501,11 @@ printGrainExpressionNotParenthesized grainExpression =
         GrainExpressionChar charValue ->
             Print.exactly (charLiteral charValue)
 
-        GrainExpressionFloat float ->
-            Print.exactly (grainNumberLiteralToString float)
+        GrainExpressionInt64 int ->
+            Print.exactly ((int |> String.fromInt) ++ "L")
+
+        GrainExpressionFloat64 float ->
+            Print.exactly ((float |> String.fromFloat) ++ "d")
 
         GrainExpressionString string ->
             printGrainString string
@@ -6420,11 +6637,6 @@ printGrainExpressionCall call =
         |> Print.followedBy (Print.exactly ")")
 
 
-grainNumberLiteralToString : Float -> String
-grainNumberLiteralToString float =
-    float |> String.fromFloat
-
-
 printGrainExpressionList : List GrainExpression -> Print
 printGrainExpressionList listElements =
     case listElements of
@@ -6504,7 +6716,7 @@ patternIsSpaceSeparated grainPattern =
         GrainPatternIgnore ->
             False
 
-        GrainPatternNumber _ ->
+        GrainPatternInt64 _ ->
             False
 
         GrainPatternChar _ ->
@@ -6957,7 +7169,7 @@ grainPatternContainedVariables grainPattern =
         GrainPatternIgnore ->
             FastSet.empty
 
-        GrainPatternNumber _ ->
+        GrainPatternInt64 _ ->
             FastSet.empty
 
         GrainPatternChar _ ->
@@ -7191,6 +7403,8 @@ grainDeclarationsToModuleString grainDeclarations =
     """module Elm
 
 from "number" include Number
+from "int64" include Int64
+from "float64" include Float64
 from "char" include Char
 from "option" include Option
 from "result" include Result
@@ -7379,21 +7593,21 @@ from "string" include String
 
 defaultDeclarations : String
 defaultDeclarations =
-    """let basics_always: ( kept, ignored ) => kept = ( kept, _ ) => kept
+    """let basics_always: (kept, ignored) => kept = (kept, _) => kept
 
 let basics_eq: (a, a) => Bool = (a, b) => a == b
 let basics_neq: (a, a) => Bool = (a, b) => a != b
-let basics_lt: (Number, Number) => Bool = (a, b) => a < b
-let basics_gt: (Number, Number) => Bool = (a, b) => a > b
-let basics_le: (Number, Number) => Bool = (a, b) => a <= b
-let basics_ge: (Number, Number) => Bool = (a, b) => a >= b
+let basics_lt: (a, a) => Bool = (a, b) => compare(a, b) < 0
+let basics_gt: (a, a) => Bool = (a, b) => compare(a, b) > 0
+let basics_le: (a, a) => Bool = (a, b) => compare(a, b) <= 0
+let basics_ge: (a, a) => Bool = (a, b) => compare(a, b) >= 0
 
 provide enum Basics_Order {
   Basics_LT,
   Basics_EQ,
   Basics_GT,
 }
-let intToBasics_Order: Number => Basics_Order = comparisonNumber =>
+let numberToBasics_Order: Number => Basics_Order = comparisonNumber =>
   if (comparisonNumber < 0) {
     Basics_LT
   } else if (comparisonNumber > 0) {
@@ -7401,92 +7615,131 @@ let intToBasics_Order: Number => Basics_Order = comparisonNumber =>
   } else {
     Basics_EQ
   }
-let basics_OrderToInt: Basics_Order => int = order => match (order) {
+let basics_OrderToNumber: Basics_Order => int = order => match (order) {
   Basics_LT => -1,
   Basics_EQ => 0,
   Basics_GT => 1,
 }
 let basics_compare: (a, a) => Basics_Order = (a, b) =>
-  intToBasics_Order(compare(a, b))
-
-let basics_add: (Number, Number) => Number = ( a, b ) => a + b
-let basics_sub: (Number, Number) => Number = ( a, b ) => a - b
-let basics_mul: (Number, Number) => Number = ( a, b ) => a * b
-let basics_pow: (Number, Number) => Number = ( base, exponent ) =>
-    base ** exponent
-let basics_fdiv: (Number, Number) => Number = ( toDivide, divisor ) =>
-    toDivide / divisor
-let basics_idiv: (Number, Number) => Number = ( toDivide, divisor ) =>
-    Number.trunc(toDivide / divisor)
-let basics_modBy: (Number, Number) => Number = (divisor, toDivide) =>
-  toDivide % divisor
-let basics_remainderBy: (Number, Number) => Number = (divisor, toDivide) => {
-  let modulus = toDivide % divisor
-
-  if ({
-    modulus > 0 && divisor < 0
-  } || {
-    modulus < 0 && divisor > 0
-  }) {
-    modulus - toDivide
-  } else {
-    modulus
-  }
+  numberToBasics_Order(compare(a, b))
+let basics_min: (a, a) => a = (a, b) => {
+  let compareResultInt = compare(a, b)
+  if (compareResultInt < 0) a else b
 }
+let basics_max: (a, a) => a = (a, b) => {
+  let compareResultInt = compare(a, b)
+  if (compareResultInt > 0) a else b
+}
+
+let basics_iabs: Int64 => Int64 = int =>
+  if (Int64.(<)(int, 0L)) Int64.(-)(0L, int) else int
+let basics_inegate: Int64 => Int64 = int => Int64.(-)(0L, int)
+let basics_toFloat: Int64 => Float64 = int =>
+  Float64.fromNumber(Int64.toNumber(int))
+let basics_sqrt: Float64 => Float64 = float =>
+  Float64.fromNumber(Number.sqrt(Float64.toNumber(float)))
+let basics_sin: Float64 => Float64 = float =>
+  Float64.fromNumber(Number.sin(Float64.toNumber(float)))
+let basics_cos: Float64 => Float64 = float =>
+  Float64.fromNumber(Number.cos(Float64.toNumber(float)))
+let basics_tan: Float64 => Float64 = float =>
+  Float64.fromNumber(Number.tan(Float64.toNumber(float)))
+let basics_asin: Float64 => Float64 = float =>
+  Float64.fromNumber(Number.asin(Float64.toNumber(float)))
+let basics_acos: Float64 => Float64 = float =>
+  Float64.fromNumber(Number.acos(Float64.toNumber(float)))
+let basics_atan: Float64 => Float64 = float =>
+  Float64.fromNumber(Number.atan(Float64.toNumber(float)))
+let basics_atan2: (Float64, Float64) => Float64 = (y, x) =>
+  Float64.fromNumber(Number.atan2(Float64.toNumber(y), Float64.toNumber(x)))
+let basics_truncate: Float64 => Int64 = float =>
+  Int64.fromNumber(Number.trunc(Float64.toNumber(float)))
+let basics_floor: Float64 => Int64 = float =>
+  Int64.fromNumber(Number.floor(Float64.toNumber(float)))
+let basics_ceiling: Float64 => Int64 = float =>
+  Int64.fromNumber(Number.ceil(Float64.toNumber(float)))
+let basics_round: Float64 => Int64 = float =>
+  Int64.fromNumber(Number.round(Float64.toNumber(float)))
+
+let basics_fadd: (Float64, Float64) => Float64 = (a, b) => Float64.(+)(a, b)
+let basics_fsub: (Float64, Float64) => Float64 = (a, b) => Float64.(-)(a, b)
+let basics_fmul: (Float64, Float64) => Float64 = (a, b) => Float64.(*)(a, b)
+let basics_fpow: (Float64, Float64) => Float64 = (base, exponent) =>
+  Float64.(**)(base, exponent)
+let basics_fdiv: (Float64, Float64) => Float64 = (toDivide, divisor) =>
+  Float64.(/)(toDivide, divisor)
+
+let basics_iadd: (Int64, Int64) => Int64 = (a, b) => Int64.(+)(a, b)
+let basics_isub: (Int64, Int64) => Int64 = (a, b) => Int64.(-)(a, b)
+let basics_imul: (Int64, Int64) => Int64 = (a, b) => Int64.(*)(a, b)
+let basics_ipow: (Int64, Int64) => Int64 = (base, exponent) =>
+  Int64.(**)(base, exponent)
+let basics_idiv: (Int64, Int64) => Int64 = (toDivide, divisor) =>
+  Int64.(/)(toDivide, divisor)
+let basics_modBy: (Int64, Int64) => Int64 = (divisor, toDivide) =>
+  Int64.(%)(toDivide, divisor)
 
 let basics_or: (Bool, Bool) => Bool = (a, b) => a || b
 let basics_and: (Bool, Bool) => Bool = (a, b) => a && b
 let basics_not: Bool => Bool = bool => !bool
 
-let char_fromCode: Number => Char = charCode =>
-  if (Char.isValid(charCode)) {
-    Char.fromCode(charCode)
+let char_fromCode: Int64 => Char = charCode =>
+  if (Char.isValid(Int64.toNumber(charCode))) {
+    Char.fromCode(Int64.toNumber(charCode))
   } else {
     Char.fromCode(0)
   }
+
 let char_isHexDigit: Char => Bool = char => {
   let code = Char.code(char)
-  0x30 <= code && code <= 0x39 ||
-    0x41 <= code && code <= 0x46 ||
-    0x61 <= code && code <= 0x66
+  0x30 <= code && code <= 0x39
+    || 0x41 <= code && code <= 0x46
+    || 0x61 <= code && code <= 0x66
 }
 
+let list_length: (List<a>) => Int64 = list =>
+  Int64.fromNumber(List.length(list))
 let list_singleton: a => List<a> = onlyElement => [onlyElement]
-let list_cons: ( a, List<a> ) => List<a> = ( newHead, tail ) =>
-    [newHead, ...tail]
-let list_sort: List<a> => List<a> = list => List.sort(compare=compare, list)
+let list_cons: (a, List<a>) => List<a> = (newHead, tail) => [newHead, ...tail]
+let list_take: (Int64, List<a>) => List<a> = (countToTake, list) =>
+  List.take(Int64.toNumber(countToTake), list)
+let list_drop: (Int64, List<a>) => List<a> = (countToTake, list) =>
+  List.drop(Int64.toNumber(countToTake), list)
+let list_sort: (List<a>) => List<a> = list => List.sort(compare=compare, list)
 let list_sortWith: ((a, a) => Basics_Order, List<a>) => List<a> = (
   elementCompare,
   list,
-) => List.sort(compare=(a, b) => basics_OrderToInt(elementCompare(a, b)), list)
-let list_range: (Number, Number) => List<Number> = (
-  startInclusive,
-  endInclusive,
 ) =>
+  List.sort(compare=(a, b) => basics_OrderToNumber(elementCompare(a, b)), list)
+let list_range: (Int64, Int64) => List<Int64> = (startInclusive, endInclusive) =>
   Range.Inclusive.map(
-    identity,
-    { rangeStart: startInclusive, rangeEnd: endInclusive }
+    Int64.fromNumber,
+    {
+      rangeStart: Int64.toNumber(startInclusive),
+      rangeEnd: Int64.toNumber(endInclusive),
+    }
   )
 let list_intersperse: (a, List<a>) => List<a> = (sep, list) => match (list) {
   [] => [],
   [listHead, ...listTail] =>
     List.reduceRight((x, soFar) => [x, sep, ...soFar], [listHead], listTail),
 }
-let list_sum: List<Number> => Number = numbers => List.reduce((+), 0, numbers)
-let list_product: List<Number> => Number = numbers =>
-  List.reduce((*), 1, numbers)
-let list_minimum: List<a> => Option<a> = list => match (list) {
-  [head, ...tail] => Some(List.reduce(Number.min, head, tail)),
+let list_sum: (List<Int64>) => Int64 = numbers =>
+  List.reduce(Int64.(+), 0L, numbers)
+let list_product: (List<Int64>) => Int64 = numbers =>
+  List.reduce(Int64.(*), 1L, numbers)
+let list_minimum: (List<a>) => Option<a> = list => match (list) {
+  [head, ...tail] => Some(List.reduce(basics_min, head, tail)),
   _ => None,
 }
-let list_maximum: List<a> => Option<a> = list => match (list) {
-  [head, ...tail] => Some(List.reduce(Number.max, head, tail)),
+let list_maximum: (List<a>) => Option<a> = list => match (list) {
+  [head, ...tail] => Some(List.reduce(basics_max, head, tail)),
   _ => None,
 }
 let list_member: (a, List<a>) => Bool = (needle, list) =>
   List.some(el => el == needle, list)
-let list_repeat: (Number, a) => List<a> = (count, element) =>
-  List.init(count, (_) => element)
+let list_repeat: (Int64, a) => List<a> = (count, element) =>
+  List.init(Int64.toNumber(count), (_) => element)
 let list_foldl: ((a, state) => state, state, List<a>) => state = (
   reduce,
   initialState,
@@ -7495,54 +7748,71 @@ let list_foldl: ((a, state) => state, state, List<a>) => state = (
   List.reduce((soFar, element) => reduce(element, soFar), initialState, list)
 }
 
+let char_toCode: Char => Int64 = char => Int64.fromNumber(Char.code(char))
+
+let string_length: String => Int64 = string =>
+  Int64.fromNumber(String.length(string))
 let string_toList: String => List<Char> = string =>
   Array.toList(String.explode(string))
-let string_fromList: List<Char> => String = chars =>
+let string_fromList: (List<Char>) => String = chars =>
   String.implode(Array.fromList(chars))
-let string_concat: List<String> => String = strings =>
+let string_concat: (List<String>) => String = strings =>
   List.join(separator="", strings)
-let string_repeat: (Number, String) => String = (count, segment) =>
+let string_repeat: (Int64, String) => String = (count, segment) =>
   string_concat(list_repeat(count, segment))
 let string_split: (String, String) => List<String> = (separator, string) =>
-    Array.toList(String.split(separator, string))
-let string_slice: (Number, Number, String) => String = (
+  Array.toList(String.split(separator, string))
+let string_slice: (Int64, Int64, String) => String = (
   startInclusivePossiblyNegative,
   endExclusivePossiblyNegative,
   string,
 ) => {
-  if (startInclusivePossiblyNegative >= String.length(string)) {
-    ""
-  } else {
-    let startInclusive = if (startInclusivePossiblyNegative < 0)
-      Number.max(0, startInclusivePossiblyNegative + String.length(string))
-    else
-      startInclusivePossiblyNegative
-    and endExclusive = if (endExclusivePossiblyNegative < 0)
-      Number.max(0, endExclusivePossiblyNegative + String.length(string))
-    else
-      Number.min(endExclusivePossiblyNegative, String.length(string))
+  let startInclusive = if (Int64.(<)(startInclusivePossiblyNegative, 0L))
+    Number.max(
+      0,
+      Int64.toNumber(startInclusivePossiblyNegative) + String.length(string)
+    )
+  else
+    Int64.toNumber(startInclusivePossiblyNegative)
+  and endExclusive = if (Int64.(<)(endExclusivePossiblyNegative, 0L))
+    Number.max(
+      0,
+      Int64.toNumber(endExclusivePossiblyNegative) + String.length(string)
+    )
+  else
+    Number.min(
+      Int64.toNumber(endExclusivePossiblyNegative),
+      String.length(string)
+    )
 
-    if (startInclusive >= endExclusive)
-      ""
-    else
-      String.slice(start=startInclusive, end=endExclusive, string)
-  }
+  if (startInclusive >= endExclusive)
+    ""
+  else
+    String.slice(start=startInclusive, end=endExclusive, string)
 }
 let string_cons: (Char, String) => String = (newHeadChar, tail) =>
   String.concat(Char.toString(newHeadChar), tail)
-let string_toInt: String => Option<Number> = string =>
-  Result.toOption(Number.parseInt(string, radix=10))
-let string_toFloat: String => Option<Number> = string =>
-  Result.toOption(Number.parseFloat(string))
+let string_toInt: String => Option<Int64> = string =>
+  match (Number.parseInt(string, radix=10)) {
+    Err(_) => None,
+    Ok(number) => Some(Int64.fromNumber(number)),
+  }
+let string_toFloat: String => Option<Float64> = string =>
+  match (Number.parseFloat(string)) {
+    Err(_) => None,
+    Ok(number) => Some(Float64.fromNumber(number)),
+  }
 let string_filter: (Char => Bool, String) => String = (shouldBeKept, string) =>
   String.implode(Array.filter(shouldBeKept, String.explode(string)))
 let string_lines: String => List<String> = string =>
   Array.toList(
     Array.flatMap(
       lineWithPotentialLoneLineBreaks => {
-        String.split("\\n", lineWithPotentialLoneLineBreaks)
+        String.split("
+", lineWithPotentialLoneLineBreaks)
       },
-      String.split("\\u{000D}", string)
+      String.split("
+", string)
     )
   )
 let string_foldl: ((Char, state) => state, state, String) => state = (
@@ -7561,20 +7831,23 @@ let string_foldr: ((Char, state) => state, state, String) => state = (
   initialState,
   string,
 ) => {
-  Array.reduceRight(
-    reduce,
-    initialState,
-    String.explode(string)
-  )
+  Array.reduceRight(reduce, initialState, String.explode(string))
 }
-let string_left: (Number, String) => String = (charCountToTake, string) =>
-  String.slice(start=0, end=charCountToTake, string)
-let string_right: (Number, String) => String = (charCountToTake, string) =>
-  String.slice(start=String.length(string) - charCountToTake - 1, string)
-let string_dropLeft: (Number, String) => String = (charCountToDrop, string) =>
-  String.slice(start=charCountToDrop, string)
-let string_dropRight: (Number, String) => String = (charCountToDrop, string) =>
-  String.slice(start=0, end=String.length(string) - charCountToDrop, string)
+let string_left: (Int64, String) => String = (charCountToTake, string) =>
+  String.slice(start=0, end=Int64.toNumber(charCountToTake), string)
+let string_right: (Int64, String) => String = (charCountToTake, string) =>
+  String.slice(
+    start=String.length(string) - Int64.toNumber(Int64.(-)(charCountToTake, 1L)),
+    string
+  )
+let string_dropLeft: (Int64, String) => String = (charCountToDrop, string) =>
+  String.slice(start=Int64.toNumber(charCountToDrop), string)
+let string_dropRight: (Int64, String) => String = (charCountToDrop, string) =>
+  String.slice(
+    start=0,
+    end=String.length(string) - Int64.toNumber(charCountToDrop),
+    string
+  )
 let string_any: (Char => Bool, String) => Bool = (isFound, string) =>
   Array.some(isFound, String.explode(string))
 let string_all: (Char => Bool, String) => Bool = (isFound, string) =>
@@ -7601,8 +7874,11 @@ grainExpressionMakeNecessaryValuesLazy lazyValues grainExpression =
                     else
                         GrainExpressionReference reference
 
-        GrainExpressionFloat float ->
-            GrainExpressionFloat float
+        GrainExpressionInt64 int ->
+            GrainExpressionInt64 int
+
+        GrainExpressionFloat64 float ->
+            GrainExpressionFloat64 float
 
         GrainExpressionChar char ->
             GrainExpressionChar char
