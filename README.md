@@ -40,7 +40,7 @@ run [this node script](https://github.com/lue-bird/elm-syntax-to-grain/tree/main
     -   `Platform`, `Platform.Cmd`, `Platform.Sub`, `Task`, `Process`
     -   ports, glsl, currying, the prefix operator functions `(>>)` and `(<<)`
     -   potential future candidates: `Basics.(<<)`, `Basics.(>>)`, `Basics.clamp`, `Basics.degrees`, `Basics.turns`,
-        `Basics.radians`, `Basics.logBase`, `Basics.toPolar`, `Basics.fromPolar`, `Basics.never`, `List.map5`, `List.map4`, `Char.toLocaleLower`, `Char.toLocaleUpper`, `Char.isAlpha`, `Char.isAlphaNum`, `Char.isDigit`, `Char.isOctDigit`, `String.split`, `String.contains`, `List.partition`, `List.map3/4/5`, `List.sortBy`, `Bitwise`, `Array`. Any help appreciated!
+        `Basics.radians`, `Basics.logBase`, `Basics.toPolar`, `Basics.fromPolar`, `Basics.never`, `List.map5`, `List.map4`, `Char.toLocaleLower`, `Char.toLocaleUpper`, `Char.isAlpha`, `Char.isAlphaNum`, `Char.isDigit`, `Char.isOctDigit`, `String.split`, `String.contains`, `List.partition`, `List.map3/4/5`, `List.sortBy`, `Bitwise.shiftRightZfBy`, `Array`. Any help appreciated!
 -   no checks are performed before transpiling to grain. So if you don't add a compile check of your elm input,
     you might e.g. get a running program that circumvents an elm opaque type or phantom type, or a grain program that can't be run
 -   not much care has been put into making the resulting code readable or even conventionally formatted

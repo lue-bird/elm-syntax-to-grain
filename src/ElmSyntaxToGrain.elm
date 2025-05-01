@@ -2612,6 +2612,29 @@ referenceToCoreGrain reference =
                 _ ->
                     Nothing
 
+        [ "Bitwise" ] ->
+            case reference.name of
+                "complement" ->
+                    Just { moduleOrigin = Just "Int64", name = "lnot" }
+
+                "and" ->
+                    Just { moduleOrigin = Nothing, name = "bitwise_and" }
+
+                "or" ->
+                    Just { moduleOrigin = Nothing, name = "bitwise_or" }
+
+                "xor" ->
+                    Just { moduleOrigin = Nothing, name = "bitwise_xor" }
+
+                "shiftLeftBy" ->
+                    Just { moduleOrigin = Nothing, name = "bitwise_shiftLeftBy" }
+
+                "shiftRightBy" ->
+                    Just { moduleOrigin = Nothing, name = "bitwise_shiftRightBy" }
+
+                _ ->
+                    Nothing
+
         [ "String" ] ->
             case reference.name of
                 "isEmpty" ->
@@ -7678,6 +7701,14 @@ let basics_idiv: (Int64, Int64) => Int64 = (toDivide, divisor) =>
   Int64.(/)(toDivide, divisor)
 let basics_modBy: (Int64, Int64) => Int64 = (divisor, toDivide) =>
   Int64.(%)(toDivide, divisor)
+
+let bitwise_and: (Int64, Int64) => Int64 = (a, b) => Int64.(&)(a, b)
+let bitwise_or: (Int64, Int64) => Int64 = (a, b) => Int64.(|)(a, b)
+let bitwise_xor: (Int64, Int64) => Int64 = (a, b) => Int64.(^)(a, b)
+let bitwise_shiftLeftBy: (Int64, Int64) => Int64 = (positionsToShiftBy, int) =>
+  Int64.(<<)(value=int, amount=positionsToShiftBy)
+let bitwise_shiftRightBy: (Int64, Int64) => Int64 = (positionsToShiftBy, int) =>
+  Int64.(>>)(value=int, amount=positionsToShiftBy)
 
 let basics_or: (Bool, Bool) => Bool = (a, b) => a || b
 let basics_and: (Bool, Bool) => Bool = (a, b) => a && b
